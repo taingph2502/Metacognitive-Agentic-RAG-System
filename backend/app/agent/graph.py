@@ -1,0 +1,709 @@
+"""
+LangGraph agent orchestration for the Autonomous Research Agent.
+
+Flow:
+    plan → query_rewrite → retrieve → read → controller → [hop?] → ...
+                                                                     ↓
+    write → claim_extract → citation_verify → evidence_graph → evaluate → diagnose → [remediate?] → END
+      ↑                                                                                   ↓
+      └──────────────────────────────────────── remediate ←───────────────────────────────┘
+
+The metacognitive loop (diagnose → remediate → write → ... → diagnose) implements
+the paper's three-phase regulation pipeline: monitoring, evaluating, planning (§4).
+"""
+
+import time
+from typing import Any, TypedDict
+
+import numpy as np
+from langgraph.graph import END, StateGraph
+
+from app.agent.metacognitive import (
+    INSUFFICIENT,
+    SATISFACTORY,
+    Diagnosis,
+    build_writing_directive,
+    check_convergence,
+    diagnose_answer,
+)
+from app.agent.planner import plan_query
+from app.agent.reader import read_documents
+from app.agent.writer import write_answer
+from app.config import settings
+from app.optimization.bandit import CONFIGS, CONFIG_NAMES, compute_reward, estimate_cost
+from app.optimization.evaluator import evaluate_answer
+from app.research.controller import ResearchSignals, decide_next_action
+from app.research.coverage import estimate_evidence_coverage
+from app.research.evidence_graph import build_evidence_graph
+from app.retrieval.hybrid import hybrid_search, hybrid_search_multi
+from app.retrieval.query_rewriter import QueryRewriter
+from app.retrieval.reranker import rerank
+from app.retrieval.guardrails import filter_retrieved_docs
+from app.verification.claim_extractor import extract_claims
+from app.verification.citation_verifier import verify_citations
+
+
+_rewriter = QueryRewriter()
+
+
+class AgentState(TypedDict):
+    # Input
+    query: str
+    bandit_alpha: dict[str, float]
+    bandit_beta: dict[str, float]
+    document_ids: list[int] | None
+
+    # Planning output
+    query_type: str
+    max_hops: int
+
+    # Retrieval tracking
+    current_config: str
+    first_config: str          # locked after plan; used to exclude on retry
+    current_query: str         # original query or followup
+    query_variants: list[str]
+    hop: int                   # number of retrieve calls made
+
+    # Accumulated results
+    all_docs: list[dict]
+    evidence: list[str]
+    followup_query: str | None
+    claims: list[str]
+
+    # Control / observability
+    retrieval_diagnostics: dict[str, float]
+    evidence_coverage: float
+    evaluator_confidence: float
+    controller_action: str
+    evidence_graph: dict
+
+    # Output
+    answer: str
+    abstained: bool
+    faithfulness: float
+    citation_precision: float
+    unsupported_claim_rate: float
+    evidence_alignment_score: float
+    answer_completeness: float
+    cost: float
+    latency: float
+    utility: float
+    retry_count: int
+
+    # Internal cost tracking
+    start_time: float
+    total_input_chars: int
+    total_output_chars: int
+
+    # Metacognitive state (Paper §4)
+    diagnosis: str                       # knowledge category from evaluator-critic
+    diagnosis_reasoning: str             # explanation from diagnosis
+    error_types: list[str]              # detected error patterns (declarative knowledge)
+    internal_sufficient: bool            # procedural: LLM knows the answer?
+    external_sufficient: bool            # procedural: docs contain the answer?
+    writing_directive: str | None        # prompt modifier for targeted remediation
+    metacognitive_round: int             # current iteration (Paper §6.5)
+    previous_answer: str                 # for convergence detection
+    diagnosis_suggested_query: str | None  # sub-query for re-retrieval
+    diagnosis_suggestion: str | None     # custom corrective suggestion
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Node helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _select_config(alpha: dict, beta: dict, exclude: str | None = None) -> str:
+    candidates = [c for c in CONFIG_NAMES if c != exclude]
+    samples = {
+        c: float(np.random.beta(alpha.get(c, 1.0), beta.get(c, 1.0)))
+        for c in candidates
+    }
+    return max(samples, key=samples.__getitem__)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Nodes
+# ──────────────────────────────────────────────────────────────────────────────
+
+async def plan_node(state: AgentState) -> dict[str, Any]:
+    result = await plan_query(state["query"])
+    config = _select_config(state["bandit_alpha"], state["bandit_beta"])
+    return {
+        "query_type": result["query_type"],
+        "max_hops": min(result["max_hops"], CONFIGS[config].get("hop_limit", result["max_hops"])),
+        "current_config": config,
+        "first_config": config,
+        "current_query": state["query"],
+        "query_variants": [state["query"]],
+        "hop": 0,
+        "all_docs": [],
+        "evidence": [],
+        "followup_query": None,
+        "claims": [],
+        "retrieval_diagnostics": {},
+        "evidence_coverage": 0.0,
+        "evaluator_confidence": 0.5,
+        "controller_action": "stop",
+        "retry_count": 0,
+        "start_time": time.monotonic(),
+        "total_input_chars": len(state["query"]) * 2,  # plan prompt approx
+        "total_output_chars": 50,
+        # Metacognitive init
+        "diagnosis": SATISFACTORY,
+        "diagnosis_reasoning": "",
+        "error_types": [],
+        "internal_sufficient": True,
+        "external_sufficient": True,
+        "writing_directive": None,
+        "metacognitive_round": 0,
+        "previous_answer": "",
+        "diagnosis_suggested_query": None,
+        "diagnosis_suggestion": None,
+    }
+
+
+async def query_rewrite_node(state: AgentState) -> dict[str, Any]:
+    # On subsequent hops, use the followup query
+    query = (
+        state["followup_query"]
+        if state["hop"] > 0 and state["followup_query"]
+        else state["current_query"]
+    )
+    cfg = CONFIGS[state["current_config"]]
+    query_variants = [query]
+    if cfg.get("query_rewrite", False):
+        if cfg.get("llm_rewrite", False):
+            query_variants = await _rewriter.rewrite_with_llm(
+                query,
+                num_rewrites=int(cfg.get("rewrite_count", settings.default_rewrite_count)),
+            )
+        else:
+            query_variants = _rewriter.rewrite(
+                query,
+                query_type=state["query_type"],
+                num_rewrites=int(cfg.get("rewrite_count", settings.default_rewrite_count)),
+            )
+
+    return {
+        "query_variants": query_variants,
+        "total_input_chars": state["total_input_chars"] + len(query) * 2,
+    }
+
+
+async def retrieve_node(state: AgentState) -> dict[str, Any]:
+    query = state["query_variants"][0] if state["query_variants"] else state["current_query"]
+    cfg = CONFIGS[state["current_config"]]
+    if len(state["query_variants"]) > 1:
+        new_docs, diagnostics = hybrid_search_multi(
+            state["query_variants"],
+            top_k=cfg["top_k"],
+            document_ids=state["document_ids"],
+        )
+    else:
+        new_docs = hybrid_search(
+            query,
+            top_k=cfg["top_k"],
+            document_ids=state["document_ids"],
+        )
+        diagnostics = {"query_coverage": 0.0, "document_diversity": 0.0, "retrieval_redundancy": 0.0, "estimated_recall_proxy": 0.0}
+
+    if cfg["rerank"] and new_docs:
+        new_docs = rerank(query, new_docs, top_k=cfg["top_k"])
+
+    # Apply retrieval guardrails to filter unsafe/low-quality chunks
+    new_docs = filter_retrieved_docs(new_docs)
+
+    # Deduplicate by doc id
+    existing_ids = {d["id"] for d in state["all_docs"]}
+    fresh = [d for d in new_docs if d["id"] not in existing_ids]
+    all_docs = state["all_docs"] + fresh
+
+    return {
+        "all_docs": all_docs,
+        "retrieval_diagnostics": diagnostics,
+        "followup_query": None,   # consumed
+        "hop": state["hop"] + 1,
+    }
+
+
+async def read_node(state: AgentState) -> dict[str, Any]:
+    result = await read_documents(state["current_query"], state["all_docs"])
+    prompt_len = len(state["current_query"]) + sum(len(d["text"]) for d in state["all_docs"][:10])
+    answer_len = sum(len(e) for e in result.get("evidence", []))
+    evidence_coverage = estimate_evidence_coverage(state["current_query"], state["all_docs"])
+
+    return {
+        "evidence": state["evidence"] + result.get("evidence", []),
+        "followup_query": result.get("followup_query"),
+        "evidence_coverage": evidence_coverage,
+        "total_input_chars": state["total_input_chars"] + prompt_len,
+        "total_output_chars": state["total_output_chars"] + answer_len,
+    }
+
+
+async def controller_node(state: AgentState) -> dict[str, Any]:
+    action = decide_next_action(
+        ResearchSignals(
+            evidence_coverage=state["evidence_coverage"],
+            retrieval_diversity=state["retrieval_diagnostics"].get("document_diversity", 0.0),
+            evaluator_confidence=state["evaluator_confidence"],
+            estimated_recall_proxy=state["retrieval_diagnostics"].get("estimated_recall_proxy", 0.0),
+            hop=state["hop"],
+            max_hops=state["max_hops"],
+            has_followup_query=bool(state.get("followup_query")),
+        )
+    )
+    followup_query = state.get("followup_query")
+    if action == "reformulate" and not followup_query:
+        rewrites = _rewriter.rewrite(state["current_query"], state["query_type"], num_rewrites=3)
+        if len(rewrites) > 1:
+            followup_query = rewrites[1]
+            action = "extra_hop"
+
+    return {
+        "followup_query": followup_query,
+        "controller_action": action,
+    }
+
+
+ABSTAIN_MESSAGE = (
+    "**Insufficient evidence.** The retrieved documents do not contain enough "
+    "relevant information to provide a reliable answer to this query. "
+    "Please try uploading more relevant documents or rephrasing your question."
+)
+
+
+async def write_node(state: AgentState) -> dict[str, Any]:
+    # If the controller decided to abstain, produce a standard message
+    if state.get("controller_action") == "abstain":
+        return {
+            "answer": ABSTAIN_MESSAGE,
+            "abstained": True,
+            "total_input_chars": state["total_input_chars"],
+            "total_output_chars": state["total_output_chars"] + len(ABSTAIN_MESSAGE),
+        }
+
+    # Paper §4.3: pass writing_directive from metacognitive planning
+    answer = await write_answer(
+        state["current_query"],
+        state["evidence"],
+        state["all_docs"],
+        writing_directive=state.get("writing_directive"),
+    )
+    prompt_len = (
+        len(state["current_query"])
+        + sum(len(e) for e in state["evidence"])
+        + sum(len(d["text"]) for d in state["all_docs"][:10])
+    )
+    return {
+        "answer": answer,
+        "abstained": False,
+        "total_input_chars": state["total_input_chars"] + prompt_len,
+        "total_output_chars": state["total_output_chars"] + len(answer),
+    }
+
+
+async def claim_extract_node(state: AgentState) -> dict[str, Any]:
+    return {"claims": extract_claims(state["answer"]) }
+
+
+async def citation_verify_node(state: AgentState) -> dict[str, Any]:
+    metrics = verify_citations(state["answer"], state["all_docs"])
+    return {
+        "citation_precision": metrics["citation_precision"],
+        "unsupported_claim_rate": metrics["unsupported_claim_rate"],
+        "evidence_alignment_score": metrics["evidence_alignment_score"],
+    }
+
+
+async def evidence_graph_node(state: AgentState) -> dict[str, Any]:
+    graph = build_evidence_graph(state["claims"], state["all_docs"])
+    return {"evidence_graph": graph.to_dict()}
+
+
+async def evaluate_node(state: AgentState) -> dict[str, Any]:
+    context = "\n\n".join(d["text"] for d in state["all_docs"][:10])
+    eval_result = await evaluate_answer(state["current_query"], state["answer"], context)
+    faithfulness = eval_result["faithfulness"]
+    answer_completeness = eval_result["answer_completeness"]
+    evaluator_confidence = eval_result["confidence"]
+
+    latency = time.monotonic() - state["start_time"]
+    cost = estimate_cost(state["total_input_chars"], state["total_output_chars"])
+    utility = compute_reward(
+        faithfulness=faithfulness,
+        citation_precision=state.get("citation_precision", 0.0),
+        answer_completeness=answer_completeness,
+        latency=latency,
+        w1=settings.reward_w1_faithfulness,
+        w2=settings.reward_w2_citation_precision,
+        w3=settings.reward_w3_answer_completeness,
+        w4=settings.reward_w4_latency_penalty,
+    )
+
+    return {
+        "faithfulness": faithfulness,
+        "answer_completeness": answer_completeness,
+        "evaluator_confidence": evaluator_confidence,
+        "cost": cost,
+        "latency": round(latency, 2),
+        "utility": utility,
+    }
+
+
+async def parallel_verify_and_evaluate_node(state: AgentState) -> dict[str, Any]:
+    """
+    Phase 3 optimization: run claim extraction, citation verification,
+    evidence graph building, and LLM evaluation in parallel.
+
+    claim_extract, citation_verify, and evidence_graph are CPU-bound and
+    have no data dependencies on each other. evaluate_answer is an LLM call
+    that only reads answer + docs. All four can safely run concurrently.
+    """
+    import asyncio
+
+    async def _claims():
+        return extract_claims(state["answer"])
+
+    async def _citations():
+        return verify_citations(state["answer"], state["all_docs"])
+
+    async def _evidence_graph(claims: list[str]):
+        return build_evidence_graph(claims, state["all_docs"])
+
+    async def _evaluate():
+        context = "\n\n".join(d["text"] for d in state["all_docs"][:10])
+        return await evaluate_answer(state["current_query"], state["answer"], context)
+
+    # Run claims + citations + evaluate in parallel
+    claims_result, citation_metrics, eval_result = await asyncio.gather(
+        _claims(), _citations(), _evaluate()
+    )
+
+    # Evidence graph depends on claims, so run after
+    graph = await _evidence_graph(claims_result)
+
+    faithfulness = eval_result["faithfulness"]
+    answer_completeness = eval_result["answer_completeness"]
+    evaluator_confidence = eval_result["confidence"]
+
+    latency = time.monotonic() - state["start_time"]
+    cost = estimate_cost(state["total_input_chars"], state["total_output_chars"])
+    utility = compute_reward(
+        faithfulness=faithfulness,
+        citation_precision=citation_metrics.get("citation_precision", 0.0),
+        answer_completeness=answer_completeness,
+        latency=latency,
+        w1=settings.reward_w1_faithfulness,
+        w2=settings.reward_w2_citation_precision,
+        w3=settings.reward_w3_answer_completeness,
+        w4=settings.reward_w4_latency_penalty,
+    )
+
+    return {
+        "claims": claims_result,
+        "citation_precision": citation_metrics["citation_precision"],
+        "unsupported_claim_rate": citation_metrics["unsupported_claim_rate"],
+        "evidence_alignment_score": citation_metrics["evidence_alignment_score"],
+        "evidence_graph": graph.to_dict(),
+        "faithfulness": faithfulness,
+        "answer_completeness": answer_completeness,
+        "evaluator_confidence": evaluator_confidence,
+        "cost": cost,
+        "latency": round(latency, 2),
+        "utility": utility,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Metacognitive nodes (Paper §4)
+# ──────────────────────────────────────────────────────────────────────────────
+
+async def diagnose_node(state: AgentState) -> dict[str, Any]:
+    """
+    Paper §4.1 + §4.2 — Monitoring + Evaluating.
+
+    Runs the metacognitive diagnosis to classify the answer's failure mode
+    and detect error patterns.  Feeds into the should_remediate edge.
+    """
+    # Skip diagnosis for abstained answers
+    if state.get("abstained"):
+        return {
+            "diagnosis": SATISFACTORY,
+            "diagnosis_reasoning": "Abstained — no metacognitive evaluation needed.",
+            "error_types": [],
+            "internal_sufficient": False,
+            "external_sufficient": False,
+        }
+
+    diag = await diagnose_answer(
+        query=state["current_query"],
+        answer=state["answer"],
+        docs=state["all_docs"],
+        faithfulness=state["faithfulness"],
+        completeness=state["answer_completeness"],
+        citation_precision=state.get("citation_precision", 0.0),
+        evaluator_confidence=state.get("evaluator_confidence", 0.0),
+    )
+
+    return {
+        "diagnosis": diag.category,
+        "diagnosis_reasoning": diag.reasoning,
+        "error_types": diag.error_types,
+        "internal_sufficient": diag.internal_sufficient,
+        "external_sufficient": diag.external_sufficient,
+        "diagnosis_suggested_query": diag.suggested_query,
+        "diagnosis_suggestion": diag.suggestion,
+        "total_input_chars": state["total_input_chars"] + 500,  # diagnosis prompt overhead
+        "total_output_chars": state["total_output_chars"] + 200,
+    }
+
+
+async def remediate_node(state: AgentState) -> dict[str, Any]:
+    """
+    Paper §4.3 — Planning.
+
+    Applies targeted remediation based on the diagnosis:
+      - INSUFFICIENT: retrieve additional documents with a sub-query
+      - INTERNAL_ONLY / EXTERNAL_ONLY / REASONING_ERROR: set writing directive
+    Routes back to write_node for re-generation.
+    """
+    diag = Diagnosis(
+        category=state["diagnosis"],
+        error_types=state.get("error_types", []),
+        internal_sufficient=state.get("internal_sufficient", True),
+        external_sufficient=state.get("external_sufficient", True),
+        reasoning=state.get("diagnosis_reasoning", ""),
+        suggested_query=state.get("diagnosis_suggested_query"),
+        suggestion=state.get("diagnosis_suggestion"),
+    )
+
+    updates: dict[str, Any] = {
+        "metacognitive_round": state["metacognitive_round"] + 1,
+        "previous_answer": state["answer"],
+        "retry_count": state["retry_count"] + 1,  # backward compat
+    }
+
+    # Paper §4.3: Insufficient knowledge → re-retrieve with targeted sub-query
+    if diag.category == INSUFFICIENT and diag.suggested_query:
+        cfg = CONFIGS[state["current_config"]]
+        new_docs = hybrid_search(
+            diag.suggested_query,
+            top_k=cfg["top_k"],
+            document_ids=state["document_ids"],
+        )
+
+        if cfg["rerank"] and new_docs:
+            new_docs = rerank(diag.suggested_query, new_docs, top_k=cfg["top_k"])
+        new_docs = filter_retrieved_docs(new_docs)
+
+        existing_ids = {d["id"] for d in state["all_docs"]}
+        fresh = [d for d in new_docs if d["id"] not in existing_ids]
+
+        if fresh:
+            all_docs = state["all_docs"] + fresh
+            read_result = await read_documents(state["current_query"], fresh)
+            new_evidence = read_result.get("evidence", [])
+            updates["all_docs"] = all_docs
+            updates["evidence"] = state["evidence"] + new_evidence
+            updates["total_input_chars"] = (
+                state["total_input_chars"]
+                + sum(len(d["text"]) for d in fresh)
+            )
+            updates["total_output_chars"] = (
+                state["total_output_chars"]
+                + sum(len(e) for e in new_evidence)
+            )
+
+    # Build writing directive for all categories
+    updates["writing_directive"] = build_writing_directive(diag)
+
+    return updates
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Conditional edge functions
+# ──────────────────────────────────────────────────────────────────────────────
+
+def should_hop(state: AgentState) -> str:
+    action = state.get("controller_action", "stop")
+    if action == "abstain":
+        return "write"  # go straight to write_node which will emit abstention
+    if action in ("extra_hop", "reformulate") and state["followup_query"] and state["hop"] < state["max_hops"]:
+        return "retrieve"
+    return "write"
+
+
+def should_remediate(state: AgentState) -> str:
+    """
+    Paper §4.1 monitoring gate + iteration control (§6.5).
+
+    Decides whether to enter another metacognitive round or finalize.
+    """
+    # Already satisfactory — no remediation needed
+    if state.get("diagnosis") == SATISFACTORY:
+        return END
+
+    # Abstained answers are not remediated
+    if state.get("abstained"):
+        return END
+
+    # Iteration limit (Paper §6.5: performance peaks around 3-5 iterations)
+    if state["metacognitive_round"] >= settings.max_metacognitive_rounds:
+        return END
+
+    # Convergence check — stop if consecutive answers are too similar
+    if check_convergence(state.get("previous_answer", ""), state.get("answer", "")):
+        return END
+
+    return "remediate"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Build the graph
+# ──────────────────────────────────────────────────────────────────────────────
+
+def build_graph(parallel: bool = True):
+    """Build the agent graph.
+
+    Args:
+        parallel: When True (default), use a single combined node for
+                  claim_extract + citation_verify + evidence_graph + evaluate.
+                  When False, keep the sequential four-step pipeline.
+    """
+    g = StateGraph(AgentState)
+
+    g.add_node("plan", plan_node)
+    g.add_node("query_rewrite", query_rewrite_node)
+    g.add_node("retrieve", retrieve_node)
+    g.add_node("read", read_node)
+    g.add_node("controller", controller_node)
+    g.add_node("write", write_node)
+    g.add_node("diagnose", diagnose_node)
+    g.add_node("remediate", remediate_node)
+
+    g.set_entry_point("plan")
+    g.add_edge("plan", "query_rewrite")
+    g.add_edge("query_rewrite", "retrieve")
+    g.add_edge("retrieve", "read")
+    g.add_edge("read", "controller")
+    g.add_conditional_edges("controller", should_hop, {"retrieve": "query_rewrite", "write": "write"})
+
+    if parallel:
+        # Phase 3c: single combined node runs all post-write steps concurrently
+        g.add_node("verify_and_evaluate", parallel_verify_and_evaluate_node)
+        g.add_edge("write", "verify_and_evaluate")
+        g.add_edge("verify_and_evaluate", "diagnose")
+    else:
+        # Sequential fallback (--disable-parallel or for debugging)
+        g.add_node("claim_extract", claim_extract_node)
+        g.add_node("citation_verify", citation_verify_node)
+        g.add_node("evidence_graph", evidence_graph_node)
+        g.add_node("evaluate", evaluate_node)
+        g.add_edge("write", "claim_extract")
+        g.add_edge("claim_extract", "citation_verify")
+        g.add_edge("citation_verify", "evidence_graph")
+        g.add_edge("evidence_graph", "evaluate")
+        g.add_edge("evaluate", "diagnose")
+
+    g.add_conditional_edges("diagnose", should_remediate, {"remediate": "remediate", END: END})
+    g.add_edge("remediate", "write")  # metacognitive loop back to write
+
+    return g.compile()
+
+
+_graph = None
+_graph_parallel: bool | None = None
+
+
+def get_graph():
+    global _graph, _graph_parallel
+    parallel = not settings.disable_parallel
+    if _graph is None or _graph_parallel != parallel:
+        _graph = build_graph(parallel=parallel)
+        _graph_parallel = parallel
+    return _graph
+
+
+def build_initial_state(
+    query: str,
+    bandit_alpha: dict,
+    bandit_beta: dict,
+    document_ids: list[int] | None = None,
+) -> AgentState:
+    return {
+        "query": query,
+        "bandit_alpha": bandit_alpha,
+        "bandit_beta": bandit_beta,
+        "document_ids": document_ids,
+        # These will be set by plan_node
+        "query_type": "",
+        "max_hops": 1,
+        "current_config": "",
+        "first_config": "",
+        "current_query": query,
+        "query_variants": [query],
+        "hop": 0,
+        "all_docs": [],
+        "evidence": [],
+        "followup_query": None,
+        "claims": [],
+        "retrieval_diagnostics": {},
+        "evidence_coverage": 0.0,
+        "evaluator_confidence": 0.5,
+        "controller_action": "stop",
+        "evidence_graph": {},
+        "answer": "",
+        "abstained": False,
+        "faithfulness": 0.0,
+        "citation_precision": 0.0,
+        "unsupported_claim_rate": 1.0,
+        "evidence_alignment_score": 0.0,
+        "answer_completeness": 0.0,
+        "cost": 0.0,
+        "latency": 0.0,
+        "utility": 0.0,
+        "retry_count": 0,
+        "start_time": time.monotonic(),
+        "total_input_chars": 0,
+        "total_output_chars": 0,
+        # Metacognitive init
+        "diagnosis": SATISFACTORY,
+        "diagnosis_reasoning": "",
+        "error_types": [],
+        "internal_sufficient": True,
+        "external_sufficient": True,
+        "writing_directive": None,
+        "metacognitive_round": 0,
+        "previous_answer": "",
+        "diagnosis_suggested_query": None,
+        "diagnosis_suggestion": None,
+    }
+
+
+async def stream_agent_updates(
+    query: str,
+    bandit_alpha: dict,
+    bandit_beta: dict,
+    document_ids: list[int] | None = None,
+):
+    graph = get_graph()
+    initial_state = build_initial_state(query, bandit_alpha, bandit_beta, document_ids)
+    async for update in graph.astream(initial_state, stream_mode="updates"):
+        yield update
+
+
+async def run_agent(
+    query: str,
+    bandit_alpha: dict,
+    bandit_beta: dict,
+    document_ids: list[int] | None = None
+) -> AgentState:
+    """
+    Run the full agent pipeline and return the final state.
+    The caller is responsible for updating the bandit after inspecting the result.
+    """
+    graph = get_graph()
+    initial_state = build_initial_state(query, bandit_alpha, bandit_beta, document_ids)
+    final_state = await graph.ainvoke(initial_state)
+    return final_state

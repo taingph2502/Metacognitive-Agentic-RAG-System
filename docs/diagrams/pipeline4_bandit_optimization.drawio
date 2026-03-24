@@ -1,0 +1,189 @@
+<mxfile host="65bd71144e">
+    <diagram name="Pipeline 4 — Bandit Optimization" id="pipeline4">
+        <mxGraphModel dx="1743" dy="879" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1300" pageHeight="720" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="title" value="Pipeline 4 — Bandit Optimization (Thompson Sampling)" style="text;html=1;strokeColor=#666666;fillColor=#f5f5f5;align=center;fontSize=18;fontStyle=1;verticalAlign=middle;fontColor=#333333;" parent="1" vertex="1">
+                    <mxGeometry width="520" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="sub" value="Cross-cutting system — runs around every query in Pipeline 2" style="text;html=1;strokeColor=#666666;fillColor=#f5f5f5;align=left;fontSize=11;fontStyle=2;fontColor=#333333;" parent="1" vertex="1">
+                    <mxGeometry y="40" width="520" height="22" as="geometry"/>
+                </mxCell>
+                <mxCell id="n_startup" value="&lt;b&gt;Startup / Pre-Query&lt;/b&gt;&lt;br/&gt;Application launch (lifespan)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#bdbdbd;fontSize=12;fontStyle=1;" parent="1" vertex="1">
+                    <mxGeometry x="20" y="90" width="200" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="n_pg_load" value="&lt;b&gt;Load BanditState&lt;/b&gt;&lt;br/&gt;PostgreSQL → alpha/beta&lt;br/&gt;per query_type&lt;br/&gt;(factual|comparative|multi_hop)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="300" y="90" width="200" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="n_init_prior" value="&lt;b&gt;Initialize Priors&lt;/b&gt;&lt;br/&gt;Default: Beta(1,1) for&lt;br/&gt;configs A, B, C, D&lt;br/&gt;(equal probability)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="640" y="90" width="200" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="sep1" value="At each query" style="text;html=1;strokeColor=none;fillColor=#ffe6cc;align=center;fontSize=11;fontStyle=1;rounded=1;strokeColor=#d6b656;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="20" y="220" width="140" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="n_classify" value="&lt;b&gt;classify_rule_based()&lt;/b&gt;&lt;br/&gt;Determine query_type&lt;br/&gt;→ load matching bandit" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="20" y="250" width="200" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="n_ts" value="&lt;b&gt;Thompson Sampling&lt;/b&gt;&lt;br/&gt;Sample Beta(α_c, β_c) per config&lt;br/&gt;10% ε-greedy exploration&lt;br/&gt;→ Select highest-sample config" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="320" y="250" width="180" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="n_cfg_grp" value="Retrieval Configs" style="swimlane;startSize=24;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="620" y="235" width="510" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="n_cfgA" value="&lt;b&gt;Config A&lt;/b&gt;&lt;br/&gt;top_k=5&lt;br/&gt;no rerank&lt;br/&gt;no rewrite" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=9;" parent="n_cfg_grp" vertex="1">
+                    <mxGeometry x="10" y="34" width="90" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="n_cfgB" value="&lt;b&gt;Config B&lt;/b&gt;&lt;br/&gt;top_k=10&lt;br/&gt;no rerank&lt;br/&gt;rewrite×3" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=9;" parent="n_cfg_grp" vertex="1">
+                    <mxGeometry x="110" y="34" width="90" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="n_cfgC" value="&lt;b&gt;Config C&lt;/b&gt;&lt;br/&gt;top_k=10&lt;br/&gt;rerank ✓&lt;br/&gt;rewrite×4" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" parent="n_cfg_grp" vertex="1">
+                    <mxGeometry x="210" y="34" width="90" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="n_cfgD" value="&lt;b&gt;Config D&lt;/b&gt;&lt;br/&gt;top_k=8&lt;br/&gt;LLM rewrite×5&lt;br/&gt;hop_limit=2" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d6b656;fontSize=9;" parent="n_cfg_grp" vertex="1">
+                    <mxGeometry x="310" y="34" width="90" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="n_cfgX" value="selected config&lt;br/&gt;→ Pipeline 2" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontStyle=1;fontSize=9;" parent="n_cfg_grp" vertex="1">
+                    <mxGeometry x="410" y="34" width="90" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="sep2" value="After pipeline completes" style="text;html=1;strokeColor=none;fillColor=#d5e8d4;align=center;fontSize=11;fontStyle=1;rounded=1;strokeColor=#82b366;verticalAlign=middle;" parent="1" vertex="1">
+                    <mxGeometry x="20" y="400" width="140" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="n_reward" value="&lt;b&gt;compute_reward()&lt;/b&gt;&lt;br/&gt;utility = 0.45×faithfulness + 0.30×citation_precision&lt;br/&gt;+ 0.20×completeness − 0.15×latency_penalty" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="20" y="440" width="260" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="n_upd_dec" value="utility ≥ 0.7?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="360" y="440" width="140" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="n_alpha" value="&lt;b&gt;alpha[config] += 1&lt;/b&gt;&lt;br/&gt;✓ Success signal" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="540" y="400" width="100" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="n_beta" value="&lt;b&gt;beta[config] += 1&lt;/b&gt;&lt;br/&gt;✗ Failure signal" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="540" y="500" width="100" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="n_save" value="&lt;b&gt;save_bandit()&lt;/b&gt;&lt;br/&gt;Upsert alpha/beta → PostgreSQL BanditState&lt;br/&gt;Persists learning across restarts" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" parent="1" vertex="1">
+                    <mxGeometry x="720" y="440" width="240" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="n_analytics_grp" value="Analytics Logging" style="swimlane;startSize=20;fillColor=#f5f5f5;strokeColor=#bdbdbd;fontStyle=1;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="20" y="580" width="430" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="n_log_run" value="&lt;b&gt;log_run()&lt;/b&gt;&lt;br/&gt;→ PostgreSQL RunLog" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" parent="n_analytics_grp" vertex="1">
+                    <mxGeometry x="10" y="34" width="100" height="46" as="geometry"/>
+                </mxCell>
+                <mxCell id="n_log_diag" value="&lt;b&gt;log_retrieval_diagnostics()&lt;/b&gt;&lt;br/&gt;→ PostgreSQL RetrievalDiagnostic" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=9;" parent="n_analytics_grp" vertex="1">
+                    <mxGeometry x="120" y="34" width="150" height="46" as="geometry"/>
+                </mxCell>
+                <mxCell id="n_stats_api" value="&lt;b&gt;GET /api/bandit&lt;/b&gt;&lt;br/&gt;bandit.stats() → win_rate, trials" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=9;" parent="n_analytics_grp" vertex="1">
+                    <mxGeometry x="280" y="34" width="140" height="46" as="geometry"/>
+                </mxCell>
+                <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;" parent="1" source="n_startup" target="n_pg_load" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e1l" value="on startup" style="edgeLabel;html=1;fontSize=9;" parent="e1" vertex="1" connectable="0">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="-25" y="-10" as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;" parent="1" source="n_pg_load" target="n_init_prior" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e2l" value="persisted state or fresh" style="edgeLabel;html=1;fontSize=9;" parent="e2" vertex="1" connectable="0">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="-55" y="-10" as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="n_init_prior" target="n_ts" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="740" y="200"/>
+                            <mxPoint x="410" y="200"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="e3l" value="loaded priors" style="edgeLabel;html=1;fontSize=9;" parent="e3" vertex="1" connectable="0">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;" parent="1" source="n_classify" target="n_ts" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e4l" value="query_type" style="edgeLabel;html=1;fontSize=9;" parent="e4" vertex="1" connectable="0">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="-30" y="-16" as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;" parent="1" source="n_ts" target="n_cfg_grp" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e5l" value="selected config name" style="edgeLabel;html=1;fontSize=9;" parent="e5" vertex="1" connectable="0">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="-50" y="-10" as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="e6" style="edgeStyle=orthogonalEdgeStyle;" parent="1" source="n_reward" target="n_upd_dec" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e6l" value="utility score" style="edgeLabel;html=1;fontSize=9;" parent="e6" vertex="1" connectable="0">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="-30" y="-10" as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="e7" style="edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;strokeColor=#82b366;" parent="1" source="n_upd_dec" target="n_alpha" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e7l" value="YES (≥ 0.7)" style="edgeLabel;html=1;fontSize=9;fontColor=#82b366;fontStyle=1;" parent="e7" vertex="1" connectable="0">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="-30" y="-10" as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="e8" style="edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=1;exitDx=0;exitDy=0;strokeColor=#b85450;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="n_upd_dec" target="n_beta" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="530" y="530" as="targetPoint"/>
+                        <Array as="points">
+                            <mxPoint x="430" y="530"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="e8l" value="NO (&lt; 0.7)" style="edgeLabel;html=1;fontSize=9;fontColor=#b85450;fontStyle=1;" parent="e8" vertex="1" connectable="0">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="-30" y="-10" as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="e9" style="edgeStyle=orthogonalEdgeStyle;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="n_alpha" target="n_save" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e10" style="edgeStyle=orthogonalEdgeStyle;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" parent="1" source="n_beta" target="n_save" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="e11" style="edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;strokeColor=#9673a6;strokeWidth=2;dashed=1;" parent="1" source="n_save" target="n_ts" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="840" y="370"/>
+                            <mxPoint x="410" y="370"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="e11l" value="↺ updated priors feed next query" style="edgeLabel;html=1;fontSize=9;fontColor=#9673a6;fontStyle=1;" parent="e11" vertex="1" connectable="0">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="40" y="-10" as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="e12" style="edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="n_reward" target="n_analytics_grp" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="150" y="550"/>
+                            <mxPoint x="235" y="550"/>
+                        </Array>
+                        <mxPoint x="235" y="630" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="e12l" value="metrics data" style="edgeLabel;html=1;fontSize=9;" parent="e12" vertex="1" connectable="0">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="-33" y="-10" as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>
