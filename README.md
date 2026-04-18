@@ -326,7 +326,7 @@ Meta-RAG/
 │   │   ├── compare.py             # Paper baseline comparison utilities
 │   │   └── results/
 │   │       └── reports/
-│   │           └── final_report.md  # Official benchmark results (2026-03-18)
+│   │           └── final_report.md  # Official benchmark results
 │   ├── tests/                     # pytest test suite
 │   ├── pyproject.toml             # Project metadata and dependencies (uv)
 │   └── Dockerfile                 # Backend container

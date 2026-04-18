@@ -1,6 +1,5 @@
 # Meta-RAG Benchmark Evaluation Report
 
-**Date:** 2026-03-18
 **LLM Provider:** DeepSeek V3.2 (`deepseek-chat`)
 **Evaluation Mode:** Gold (provided supporting documents — tests reasoning quality)
 **Samples per dataset:** 500 (seed=42, concurrency=20)
