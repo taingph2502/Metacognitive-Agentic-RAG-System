@@ -193,7 +193,11 @@ async def read_node(state: AgentState) -> dict[str, Any]:
     result = await read_documents(query, state["all_docs"])
     prompt_len = len(query) + sum(len(d["text"]) for d in state["all_docs"][:10])
     answer_len = sum(len(e) for e in result.get("evidence", []))
-    evidence_coverage = estimate_evidence_coverage(query, state["all_docs"])
+    comp = state.get("complexity", "simple")
+    if comp in ("simple", "complex"):
+        evidence_coverage = 1.0  # Bypass expensive coverage calculation
+    else:
+        evidence_coverage = estimate_evidence_coverage(query, state["all_docs"])
 
     return {
         "evidence": state["evidence"] + result.get("evidence", []),
@@ -205,6 +209,14 @@ async def read_node(state: AgentState) -> dict[str, Any]:
 
 
 async def controller_node(state: AgentState) -> dict[str, Any]:
+    comp = state.get("complexity", "simple")
+    if comp in ("simple", "complex"):
+        # Bypass decide_next_action since max_hops = 1
+        return {
+            "followup_query": state.get("followup_query"),
+            "controller_action": "stop",
+        }
+
     action = decide_next_action(
         ResearchSignals(
             evidence_coverage=state["evidence_coverage"],
@@ -218,7 +230,7 @@ async def controller_node(state: AgentState) -> dict[str, Any]:
     )
     followup_query = state.get("followup_query")
     if action == "reformulate" and not followup_query:
-        rewrites = _rewriter.rewrite(state["current_query"], state.get("complexity", "simple"), num_rewrites=3)
+        rewrites = _rewriter.rewrite(state["current_query"], comp, num_rewrites=3)
         if len(rewrites) > 1:
             followup_query = rewrites[1]
             action = "extra_hop"
