@@ -48,3 +48,5 @@ lerna-debug.log*
 # Others
 .pytest_cache/
 .run/
+.agents/
+docs/diagrams/

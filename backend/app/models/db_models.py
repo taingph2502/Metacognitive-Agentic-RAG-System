@@ -21,26 +21,6 @@ class RunLog(Base):
     config_name: Mapped[str] = mapped_column(String)
     faithfulness: Mapped[float] = mapped_column(Float)
     cost: Mapped[float] = mapped_column(Float)
-    latency: Mapped[float] = mapped_column(Float)
-    utility: Mapped[float] = mapped_column(Float)
-    is_retry: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive)
-
-
-class BanditState(Base):
-    __tablename__ = "bandit_states"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    query_type: Mapped[str] = mapped_column(String, unique=True, index=True)
-    alpha: Mapped[dict] = mapped_column(JSONB)
-    beta: Mapped[dict] = mapped_column(JSONB)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow_naive, onupdate=utcnow_naive)
-
-
-class Document(Base):
-    __tablename__ = "documents"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     filename: Mapped[str] = mapped_column(String, index=True)
     source: Mapped[str] = mapped_column(String)
     status: Mapped[str] = mapped_column(String, default="processing")  # processing, indexed, failed

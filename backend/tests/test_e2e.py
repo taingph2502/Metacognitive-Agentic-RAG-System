@@ -89,19 +89,19 @@ async def test_hybrid_search_returns_results(test_collection, monkeypatch):
 # Planner
 # ──────────────────────────────────────────────────────────────────────────────
 
-def test_rule_based_classifier_factual():
+def test_rule_based_classifier_simple():
     from app.agent.planner import classify_rule_based
-    assert classify_rule_based("What is the learning rate used?") == "factual"
+    assert classify_rule_based("What is the learning rate used?") == "simple"
 
 
-def test_rule_based_classifier_comparative():
+def test_rule_based_classifier_complex():
     from app.agent.planner import classify_rule_based
-    assert classify_rule_based("Compare BERT vs GPT") == "comparative"
+    assert classify_rule_based("Compare BERT vs GPT") == "complex"
 
 
 def test_rule_based_classifier_multi_hop():
     from app.agent.planner import classify_rule_based
-    assert classify_rule_based("Why does attention help in NLP?") == "multi_hop"
+    assert classify_rule_based("Why does attention help in NLP?") == "multi-hop"
 
 
 # ──────────────────────────────────────────────────────────────────────────────

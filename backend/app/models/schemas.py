@@ -75,18 +75,6 @@ class DocumentUploadResponse(BaseModel):
     chunks_indexed: int
 
 
-class ConfigStats(BaseModel):
-    alpha: float
-    beta: float
-    win_rate: float
-    trials: int
-
-
-class BanditStats(BaseModel):
-    query_type: str
-    configs: dict[str, ConfigStats]
-
-
 class HealthResponse(BaseModel):
     status: str
     qdrant: bool

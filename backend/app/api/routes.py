@@ -14,17 +14,14 @@ from app.config import settings
 from app.database import get_db
 from app.ingestion.pipeline import ingest_document
 from app.memory.strategy_memory import (
-    load_bandit,
     log_provenance_snapshot,
     log_retrieval_diagnostics,
     log_run,
-    save_bandit,
 )
+from app.agent.graph import ROUTING_CONFIGS
 from app.models.db_models import Document, ProvenanceSnapshot, RetrievalDiagnostic, RunLog
 from app.models.schemas import (
-    BanditStats,
     CitedChunk,
-    ConfigStats,
     DocumentRead,
     DocumentUploadResponse,
     EvidenceGraphLinkRead,
@@ -36,7 +33,7 @@ from app.models.schemas import (
     RetrievedDocumentRead,
     RunMetrics,
 )
-from app.optimization.bandit import CONFIGS, CONFIG_NAMES, compute_reward
+from app.optimization.bandit import compute_reward
 from app.retrieval.bm25_retrieval import (
     delete_es_by_document_id,
     delete_es_by_source,
@@ -137,24 +134,15 @@ async def system_overview():
                 "title": "Metacognitive Loop",
                 "summary": "Diagnoses failure modes and applies targeted remediation through re-retrieval or writing directives.",
             },
-            {
-                "id": "bandit",
-                "title": "Bandit Optimizer",
-                "summary": "Uses Thompson Sampling to adaptively favor retrieval configurations that yield better utility.",
-            },
         ],
         "retrieval_configs": [
             {
                 "name": name,
                 "top_k": cfg["top_k"],
-                "chunk_size": cfg["chunk_size"],
                 "rerank": cfg["rerank"],
-                "query_rewrite": cfg["query_rewrite"],
-                "rewrite_count": cfg["rewrite_count"],
-                "hop_limit": cfg["hop_limit"],
-                "llm_rewrite": cfg.get("llm_rewrite", False),
+                "max_hops": cfg["max_hops"],
             }
-            for name, cfg in CONFIGS.items()
+            for name, cfg in ROUTING_CONFIGS.items()
         ],
         "metacognition": {
             "max_rounds": settings.max_metacognitive_rounds,
@@ -185,11 +173,8 @@ async def query_endpoint(body: QueryRequest, db: AsyncSession = Depends(get_db))
 
     query_context = await _prepare_query_context(query, db)
 
-    # Run the agent with learned bandit priors
     final_state = await run_agent(
         query,
-        query_context["learned_alpha"],
-        query_context["learned_beta"],
         document_ids=query_context["active_doc_ids"],
     )
 
@@ -197,8 +182,6 @@ async def query_endpoint(body: QueryRequest, db: AsyncSession = Depends(get_db))
         db=db,
         query=query,
         final_state=final_state,
-        bandits=query_context["bandits"],
-        predicted_type=query_context["predicted_type"],
     )
 
 
@@ -213,16 +196,12 @@ async def query_stream_endpoint(body: QueryRequest, db: AsyncSession = Depends(g
     async def event_generator():
         current_state = build_initial_state(
             query,
-            query_context["learned_alpha"],
-            query_context["learned_beta"],
             document_ids=query_context["active_doc_ids"],
         )
 
         try:
             async for update in stream_agent_updates(
                 query,
-                query_context["learned_alpha"],
-                query_context["learned_beta"],
                 document_ids=query_context["active_doc_ids"],
             ):
                 for node_name, payload in update.items():
@@ -253,8 +232,6 @@ async def query_stream_endpoint(body: QueryRequest, db: AsyncSession = Depends(g
                 db=db,
                 query=query,
                 final_state=current_state,
-                bandits=query_context["bandits"],
-                predicted_type=query_context["predicted_type"],
             )
             yield _sse_event({"type": "query_complete", "response": response.model_dump()})
         except Exception as exc:
@@ -268,26 +245,10 @@ def _sse_event(payload: dict) -> str:
 
 
 async def _prepare_query_context(query: str, db: AsyncSession) -> dict:
-    # Pre-classify query type cheaply (rule-based, no LLM call) so we can
-    # load the *correct* bandit and inject learned priors into the agent.
-    predicted_type = classify_rule_based(query)
-    bandit = await load_bandit(db, predicted_type)
-
-    # Also pre-load the other bandits so we can switch after the agent
-    # confirms the real query_type (via its LLM planner).
-    bandits = {predicted_type: bandit}
-    for qt in ("factual", "comparative", "multi_hop"):
-        if qt != predicted_type:
-            bandits[qt] = await load_bandit(db, qt)
-
     doc_result = await db.execute(select(Document.id))
     active_doc_ids = [row[0] for row in doc_result.all()]
 
     return {
-        "predicted_type": predicted_type,
-        "bandits": bandits,
-        "learned_alpha": dict(bandit.alpha),
-        "learned_beta": dict(bandit.beta),
         "active_doc_ids": active_doc_ids,
     }
 
@@ -296,14 +257,9 @@ async def _finalize_query_response(
     db: AsyncSession,
     query: str,
     final_state: dict,
-    bandits: dict,
-    predicted_type: str,
 ) -> QueryResponse:
-    query_type = final_state["query_type"]
-    bandit = bandits.get(query_type, bandits[predicted_type])
-
-    first_config = final_state["first_config"]
-    final_config = final_state["current_config"]
+    query_type = final_state.get("complexity", "simple")
+    final_config = query_type
 
     faithfulness = final_state["faithfulness"]
     citation_precision = final_state.get("citation_precision", 0.0)
@@ -322,14 +278,8 @@ async def _finalize_query_response(
 
     metacognitive_round = final_state.get("metacognitive_round", 0)
 
-    # Bandit update: reward the config with the final utility.
-    # Metacognitive remediation refines reasoning without swapping configs,
-    # so we update the single config used.  The bandit learns which configs
-    # produce answers that need fewer metacognitive rounds.
-    bandit.update(final_config, utility)
     await log_run(db, query, query_type, final_config, faithfulness, cost, latency, utility, is_retry=metacognitive_round > 0)
     await log_retrieval_diagnostics(db, query, query_type, final_config, retrieval_diagnostics)
-    await save_bandit(db, query_type, bandit)
 
     docs = final_state["all_docs"]
     citations = _extract_citations(final_state["answer"], docs)
@@ -380,17 +330,7 @@ def _build_stream_event(node_name: str, state: dict) -> dict | None:
             "type": "step_completed",
             "step": "planner",
             "details": {
-                "query_type": state.get("query_type"),
-                "selected_config": state.get("current_config"),
-            },
-        }
-
-    if node_name == "query_rewrite":
-        return {
-            "type": "step_completed",
-            "step": "query_rewriting",
-            "details": {
-                "variants_generated": len(state.get("query_variants", [])),
+                "complexity": state.get("complexity", "simple"),
                 "primary_query": (state.get("query_variants") or [state.get("current_query", "")])[0],
             },
         }
@@ -838,35 +778,7 @@ async def wipe_all_documents(db: AsyncSession = Depends(get_db)):
     return {"message": "All database records and vector embeddings have been wiped."}
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Bandit stats
-# ──────────────────────────────────────────────────────────────────────────────
-
-@router.get("/bandit/{query_type}", response_model=BanditStats)
-async def bandit_stats(query_type: str, db: AsyncSession = Depends(get_db)):
-    if query_type not in ("factual", "comparative", "multi_hop"):
-        raise HTTPException(status_code=400, detail="query_type must be factual, comparative, or multi_hop")
-    bandit = await load_bandit(db, query_type)
-    raw = bandit.stats()
-    return BanditStats(
-        query_type=query_type,
-        configs={
-            name: ConfigStats(**stats) for name, stats in raw.items()
-        },
-    )
-
-
-@router.get("/bandit", response_model=list[BanditStats])
-async def all_bandit_stats(db: AsyncSession = Depends(get_db)):
-    result = []
-    for qt in ("factual", "comparative", "multi_hop"):
-        bandit = await load_bandit(db, qt)
-        raw = bandit.stats()
-        result.append(BanditStats(
-            query_type=qt,
-            configs={name: ConfigStats(**stats) for name, stats in raw.items()},
-        ))
-    return result
+# (Bandit stats endpoints removed)
 
 
 @router.get("/benchmarks/summaries")

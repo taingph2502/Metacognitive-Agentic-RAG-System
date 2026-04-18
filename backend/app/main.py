@@ -17,7 +17,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Autonomous Research Agent",
-    description="Self-optimizing RAG pipeline with Thompson Sampling bandit.",
+    description="Optimized RAG pipeline with Rule-based routing.",
     version="0.1.0",
     lifespan=lifespan,
 )

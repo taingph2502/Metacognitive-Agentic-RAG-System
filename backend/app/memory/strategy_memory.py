@@ -1,43 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.db_models import BanditState, ProvenanceSnapshot, RetrievalDiagnostic, RunLog, utcnow_naive
-from app.optimization.bandit import ThompsonSamplingBandit
-
-
-async def load_bandit(db: AsyncSession, query_type: str) -> ThompsonSamplingBandit:
-    """Load persisted bandit state from DB; returns fresh bandit if not found."""
-    result = await db.execute(
-        select(BanditState).where(BanditState.query_type == query_type)
-    )
-    state = result.scalar_one_or_none()
-    bandit = ThompsonSamplingBandit()
-    if state:
-        bandit.alpha = dict(state.alpha)
-        bandit.beta = dict(state.beta)
-    return bandit
-
-
-async def save_bandit(
-    db: AsyncSession, query_type: str, bandit: ThompsonSamplingBandit
-) -> None:
-    """Upsert bandit state to DB."""
-    result = await db.execute(
-        select(BanditState).where(BanditState.query_type == query_type)
-    )
-    state = result.scalar_one_or_none()
-    if state:
-        state.alpha = dict(bandit.alpha)
-        state.beta = dict(bandit.beta)
-        state.updated_at = utcnow_naive()
-    else:
-        state = BanditState(
-            query_type=query_type,
-            alpha=dict(bandit.alpha),
-            beta=dict(bandit.beta),
-        )
-        db.add(state)
-    await db.commit()
+from app.models.db_models import ProvenanceSnapshot, RetrievalDiagnostic, RunLog
 
 
 async def log_run(
