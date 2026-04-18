@@ -54,57 +54,6 @@ def test_citation_verifier_detects_unsupported_claims():
     assert metrics["citation_precision"] < 1.0
 
 
-def test_research_controller_requests_more_retrieval_when_coverage_low():
-    from app.research.controller import ResearchSignals, decide_next_action
-
-    action = decide_next_action(
-        ResearchSignals(
-            evidence_coverage=0.2,
-            retrieval_diversity=0.5,
-            evaluator_confidence=0.7,
-            estimated_recall_proxy=0.5,
-            hop=0,
-            max_hops=2,
-            has_followup_query=True,
-        )
-    )
-    assert action == "extra_hop"
-
-
-def test_research_controller_abstains_when_evidence_exhausted():
-    from app.research.controller import ResearchSignals, decide_next_action
-
-    action = decide_next_action(
-        ResearchSignals(
-            evidence_coverage=0.1,
-            retrieval_diversity=0.1,
-            evaluator_confidence=0.3,
-            estimated_recall_proxy=0.1,
-            hop=2,
-            max_hops=2,
-            has_followup_query=False,
-        )
-    )
-    assert action == "abstain"
-
-
-def test_research_controller_reformulates_on_low_recall_proxy():
-    from app.research.controller import ResearchSignals, decide_next_action
-
-    action = decide_next_action(
-        ResearchSignals(
-            evidence_coverage=0.6,
-            retrieval_diversity=0.5,
-            evaluator_confidence=0.8,
-            estimated_recall_proxy=0.1,
-            hop=0,
-            max_hops=2,
-            has_followup_query=False,
-        )
-    )
-    assert action == "reformulate"
-
-
 def test_guardrails_filters_injection():
     from app.retrieval.guardrails import filter_retrieved_docs
 

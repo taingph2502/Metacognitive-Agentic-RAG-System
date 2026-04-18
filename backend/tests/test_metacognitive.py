@@ -283,16 +283,4 @@ def test_should_remediate_stops_on_convergence():
     assert should_remediate(state) == END
 
 
-def test_should_remediate_returns_end_for_abstained():
-    from langgraph.graph import END
 
-    from app.agent.graph import should_remediate
-
-    state = {
-        "diagnosis": "insufficient_knowledge",
-        "abstained": True,
-        "metacognitive_round": 0,
-        "previous_answer": "",
-        "answer": "Abstained.",
-    }
-    assert should_remediate(state) == END

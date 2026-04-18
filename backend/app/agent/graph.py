@@ -33,17 +33,12 @@ from app.agent.writer import write_answer
 from app.config import settings
 from app.optimization.bandit import compute_reward, estimate_cost
 from app.optimization.evaluator import evaluate_answer
-from app.research.controller import ResearchSignals, decide_next_action
-from app.research.coverage import estimate_evidence_coverage
 from app.research.evidence_graph import build_evidence_graph
 from app.retrieval.hybrid import hybrid_search, hybrid_search_multi
-from app.retrieval.query_rewriter import QueryRewriter
 from app.retrieval.reranker import rerank
 from app.retrieval.guardrails import filter_retrieved_docs
 from app.verification.claim_extractor import extract_claims
 from app.verification.citation_verifier import verify_citations
-
-_rewriter = QueryRewriter()
 
 ROUTING_CONFIGS = {
     "simple": {"top_k": 5, "rerank": False, "max_hops": 1},
@@ -73,14 +68,11 @@ class AgentState(TypedDict):
 
     # Control / observability
     retrieval_diagnostics: dict[str, float]
-    evidence_coverage: float
     evaluator_confidence: float
-    controller_action: str
     evidence_graph: dict
 
     # Output
     answer: str
-    abstained: bool
     faithfulness: float
     citation_precision: float
     unsupported_claim_rate: float
@@ -116,9 +108,9 @@ class AgentState(TypedDict):
 async def plan_node(state: AgentState) -> dict[str, Any]:
     result = await plan_query(state["query"])
     comp = result.get("complexity", "simple")
-    rw_query = result.get("rewritten_query", "")
     
-    final_query = rw_query.strip() if rw_query.strip() else state["query"]
+    # We strictly enforce raw query usage for academic benchmark integrity
+    final_query = state["query"]
     cfg = ROUTING_CONFIGS.get(comp, ROUTING_CONFIGS["simple"])
 
     return {
@@ -132,9 +124,7 @@ async def plan_node(state: AgentState) -> dict[str, Any]:
         "followup_query": None,
         "claims": [],
         "retrieval_diagnostics": {},
-        "evidence_coverage": 0.0,
         "evaluator_confidence": 0.5,
-        "controller_action": "stop",
         "retry_count": 0,
         "start_time": time.monotonic(),
         "total_input_chars": len(state["query"]) * 2,  # plan prompt approx
@@ -193,71 +183,16 @@ async def read_node(state: AgentState) -> dict[str, Any]:
     result = await read_documents(query, state["all_docs"])
     prompt_len = len(query) + sum(len(d["text"]) for d in state["all_docs"][:10])
     answer_len = sum(len(e) for e in result.get("evidence", []))
-    comp = state.get("complexity", "simple")
-    if comp in ("simple", "complex"):
-        evidence_coverage = 1.0  # Bypass expensive coverage calculation
-    else:
-        evidence_coverage = estimate_evidence_coverage(query, state["all_docs"])
 
     return {
         "evidence": state["evidence"] + result.get("evidence", []),
         "followup_query": result.get("followup_query"),
-        "evidence_coverage": evidence_coverage,
         "total_input_chars": state["total_input_chars"] + prompt_len,
         "total_output_chars": state["total_output_chars"] + answer_len,
     }
 
 
-async def controller_node(state: AgentState) -> dict[str, Any]:
-    comp = state.get("complexity", "simple")
-    if comp in ("simple", "complex"):
-        # Bypass decide_next_action since max_hops = 1
-        return {
-            "followup_query": state.get("followup_query"),
-            "controller_action": "stop",
-        }
-
-    action = decide_next_action(
-        ResearchSignals(
-            evidence_coverage=state["evidence_coverage"],
-            retrieval_diversity=state["retrieval_diagnostics"].get("document_diversity", 0.0),
-            evaluator_confidence=state["evaluator_confidence"],
-            estimated_recall_proxy=state["retrieval_diagnostics"].get("estimated_recall_proxy", 0.0),
-            hop=state["hop"],
-            max_hops=state["max_hops"],
-            has_followup_query=bool(state.get("followup_query")),
-        )
-    )
-    followup_query = state.get("followup_query")
-    if action == "reformulate" and not followup_query:
-        rewrites = _rewriter.rewrite(state["current_query"], comp, num_rewrites=3)
-        if len(rewrites) > 1:
-            followup_query = rewrites[1]
-            action = "extra_hop"
-
-    return {
-        "followup_query": followup_query,
-        "controller_action": action,
-    }
-
-
-ABSTAIN_MESSAGE = (
-    "**Insufficient evidence.** The retrieved documents do not contain enough "
-    "relevant information to provide a reliable answer to this query. "
-    "Please try uploading more relevant documents or rephrasing your question."
-)
-
-
 async def write_node(state: AgentState) -> dict[str, Any]:
-    # If the controller decided to abstain, produce a standard message
-    if state.get("controller_action") == "abstain":
-        return {
-            "answer": ABSTAIN_MESSAGE,
-            "abstained": True,
-            "total_input_chars": state["total_input_chars"],
-            "total_output_chars": state["total_output_chars"] + len(ABSTAIN_MESSAGE),
-        }
-
     # Paper §4.3: pass writing_directive from metacognitive planning
     answer = await write_answer(
         state["current_query"],
@@ -387,15 +322,6 @@ async def parallel_verify_and_evaluate_node(state: AgentState) -> dict[str, Any]
 # ──────────────────────────────────────────────────────────────────────────────
 
 async def diagnose_node(state: AgentState) -> dict[str, Any]:
-    if state.get("abstained"):
-        return {
-            "diagnosis": SATISFACTORY,
-            "diagnosis_reasoning": "Abstained — no metacognitive evaluation needed.",
-            "error_types": [],
-            "internal_sufficient": False,
-            "external_sufficient": False,
-        }
-
     diag = await diagnose_answer(
         query=state["current_query"],
         answer=state["answer"],
@@ -478,19 +404,8 @@ async def remediate_node(state: AgentState) -> dict[str, Any]:
 # Conditional edge functions
 # ──────────────────────────────────────────────────────────────────────────────
 
-def should_hop(state: AgentState) -> str:
-    action = state.get("controller_action", "stop")
-    if action == "abstain":
-        return "write"
-    if action in ("extra_hop", "reformulate") and state["followup_query"] and state["hop"] < state["max_hops"]:
-        return "retrieve"
-    return "write"
-
-
 def should_remediate(state: AgentState) -> str:
     if state.get("diagnosis") == SATISFACTORY:
-        return END
-    if state.get("abstained"):
         return END
     if state["metacognitive_round"] >= settings.max_metacognitive_rounds:
         return END
@@ -510,7 +425,6 @@ def build_graph(parallel: bool = True):
     g.add_node("plan", plan_node)
     g.add_node("retrieve", retrieve_node)
     g.add_node("read", read_node)
-    g.add_node("controller", controller_node)
     g.add_node("write", write_node)
     g.add_node("diagnose", diagnose_node)
     g.add_node("remediate", remediate_node)
@@ -518,8 +432,7 @@ def build_graph(parallel: bool = True):
     g.set_entry_point("plan")
     g.add_edge("plan", "retrieve")
     g.add_edge("retrieve", "read")
-    g.add_edge("read", "controller")
-    g.add_conditional_edges("controller", should_hop, {"retrieve": "retrieve", "write": "write"})
+    g.add_edge("read", "write")
 
     if parallel:
         g.add_node("verify_and_evaluate", parallel_verify_and_evaluate_node)
@@ -572,12 +485,9 @@ def build_initial_state(
         "followup_query": None,
         "claims": [],
         "retrieval_diagnostics": {},
-        "evidence_coverage": 0.0,
         "evaluator_confidence": 0.5,
-        "controller_action": "stop",
         "evidence_graph": {},
         "answer": "",
-        "abstained": False,
         "faithfulness": 0.0,
         "citation_precision": 0.0,
         "unsupported_claim_rate": 1.0,
