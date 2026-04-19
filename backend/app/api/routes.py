@@ -3,13 +3,13 @@ import re
 from collections import Counter
 from pathlib import Path
 
+import logging
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.graph import build_initial_state, run_agent, stream_agent_updates
-from app.agent.planner import classify_rule_based
 from app.config import settings
 from app.database import get_db
 from app.ingestion.pipeline import ingest_document
@@ -33,7 +33,6 @@ from app.models.schemas import (
     RetrievedDocumentRead,
     RunMetrics,
 )
-from app.optimization.bandit import compute_reward
 from app.retrieval.bm25_retrieval import (
     delete_es_by_document_id,
     delete_es_by_source,
@@ -41,6 +40,7 @@ from app.retrieval.bm25_retrieval import (
 )
 from app.retrieval.dense import delete_by_document_id, delete_by_source, wipe_all_embeddings
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 BENCHMARK_RESULTS_DIR = BACKEND_ROOT / "benchmarks" / "results" / "evaluations"
@@ -61,14 +61,14 @@ async def health(db: AsyncSession = Depends(get_db)):
         from app.retrieval.dense import get_qdrant_client
         get_qdrant_client().get_collections()
         qdrant_ok = True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Qdrant health check failed: {e}")
 
     try:
         await db.execute(text("SELECT 1"))
         db_ok = True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Database health check failed: {e}")
 
     return HealthResponse(
         status="ok" if qdrant_ok and db_ok else "degraded",
@@ -267,18 +267,11 @@ async def _finalize_query_response(
     answer_completeness = final_state.get("answer_completeness", 0.0)
     cost = final_state["cost"]
     latency = final_state["latency"]
-    utility = compute_reward(
-        faithfulness=faithfulness,
-        citation_precision=citation_precision,
-        answer_completeness=answer_completeness,
-        latency=latency,
-    )
-    retry_count = final_state["retry_count"]
     retrieval_diagnostics = final_state.get("retrieval_diagnostics", {})
 
     metacognitive_round = final_state.get("metacognitive_round", 0)
 
-    await log_run(db, query, query_type, final_config, faithfulness, cost, latency, utility, is_retry=metacognitive_round > 0)
+    await log_run(db, query, query_type, final_config, faithfulness, cost, latency, is_retry=metacognitive_round > 0)
     await log_retrieval_diagnostics(db, query, query_type, final_config, retrieval_diagnostics)
 
     docs = final_state["all_docs"]
@@ -309,7 +302,6 @@ async def _finalize_query_response(
             answer_completeness=round(answer_completeness, 4),
             cost=round(cost, 6),
             latency=round(latency, 2),
-            utility=round(utility, 4),
             config=final_config,
             query_type=query_type,
             hops=final_state["hop"],
@@ -507,7 +499,6 @@ def _build_provenance(final_state: dict, citations: list[CitedChunk]) -> QueryPr
     ]
 
     return QueryProvenance(
-        query_variants=[str(item) for item in final_state.get("query_variants", [])],
         evidence_spans=[str(item) for item in final_state.get("evidence", [])[:12]],
         followup_query=final_state.get("followup_query"),
         retrieved_documents=retrieved_documents,
@@ -546,10 +537,9 @@ async def analytics_overview(db: AsyncSession = Depends(get_db)):
             func.avg(RunLog.faithfulness),
             func.avg(RunLog.latency),
             func.avg(RunLog.cost),
-            func.avg(RunLog.utility),
         )
     )
-    avg_faithfulness, avg_latency, avg_cost, avg_utility = run_averages.one()
+    avg_faithfulness, avg_latency, avg_cost = run_averages.one()
 
     recent_runs_result = await db.execute(
         select(RunLog).order_by(RunLog.created_at.desc()).limit(12)
@@ -595,7 +585,6 @@ async def analytics_overview(db: AsyncSession = Depends(get_db)):
             "avg_faithfulness": round(float(avg_faithfulness or 0.0), 4),
             "avg_latency": round(float(avg_latency or 0.0), 2),
             "avg_cost": round(float(avg_cost or 0.0), 6),
-            "avg_utility": round(float(avg_utility or 0.0), 4),
         },
         "query_type_distribution": [
             {"label": label, "count": count}
@@ -613,7 +602,6 @@ async def analytics_overview(db: AsyncSession = Depends(get_db)):
                 "faithfulness": round(run.faithfulness, 4),
                 "cost": round(run.cost, 6),
                 "latency": round(run.latency, 2),
-                "utility": round(run.utility, 4),
                 "is_retry": run.is_retry,
                 "created_at": run.created_at.isoformat(),
             }

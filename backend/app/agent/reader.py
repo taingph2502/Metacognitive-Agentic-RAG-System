@@ -1,7 +1,11 @@
+import logging
+
 from langchain_core.messages import HumanMessage
 
 from app.llm import ainvoke
 from app.text_utils import extract_json_object
+
+logger = logging.getLogger(__name__)
 
 
 READ_PROMPT = """\
@@ -15,17 +19,14 @@ Documents:
 Respond with JSON only:
 {{
   "evidence": ["<direct quote or paraphrase with citation [N]>", ...],
-  "missing": "<key information still missing to answer the query, or null>",
-  "followup_query": "<a targeted follow-up search query to retrieve missing info, or null>"
-}}
-
-Set "followup_query" only if important information is truly missing. Do not set it for minor details."""
+  "missing": "<key information still missing to answer the query, or null>"
+}}"""
 
 
 async def read_documents(query: str, docs: list[dict]) -> dict:
     """
     Extract evidence spans and identify information gaps.
-    Returns {"evidence": list[str], "missing": str|None, "followup_query": str|None}
+    Returns {"evidence": list[str], "missing": str|None}
     """
     context = "\n\n".join(
         [f"[{i + 1}] (Source: {d['source']})\n{d['text']}" for i, d in enumerate(docs)]
@@ -37,13 +38,11 @@ async def read_documents(query: str, docs: list[dict]) -> dict:
         if result:
             result.setdefault("evidence", [])
             result.setdefault("missing", None)
-            result.setdefault("followup_query", None)
             return result
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to parse reader LLM output: {e}", exc_info=True)
 
     return {
         "evidence": [d["text"][:300] for d in docs[:3]],
         "missing": None,
-        "followup_query": None,
     }

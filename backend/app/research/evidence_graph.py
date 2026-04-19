@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass, field
 
+from app.text_utils import tokenize_for_overlap as _tokenize
+
 
 @dataclass
 class EvidenceLink:
@@ -44,10 +46,6 @@ class EvidenceGraph:
                 for link in self.links
             ],
         }
-
-
-from app.text_utils import tokenize_for_overlap as _tokenize
-
 
 def build_evidence_graph(claims: list[str], docs: list[dict], overlap_threshold: float = 0.3) -> EvidenceGraph:
     """

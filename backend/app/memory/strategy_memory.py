@@ -1,4 +1,3 @@
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.db_models import ProvenanceSnapshot, RetrievalDiagnostic, RunLog

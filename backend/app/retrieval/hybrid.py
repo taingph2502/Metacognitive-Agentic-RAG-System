@@ -1,5 +1,4 @@
 from app.retrieval.bm25_retrieval import bm25_search
-from app.retrieval.diagnostics import compute_retrieval_diagnostics
 from app.retrieval.dense import dense_search
 
 
@@ -37,25 +36,4 @@ def hybrid_search(query: str, top_k: int = 10, document_ids: list[int] | None = 
     ]
 
 
-def hybrid_search_multi(
-    queries: list[str],
-    top_k: int = 10,
-    document_ids: list[int] | None = None,
-) -> tuple[list[dict], dict[str, float]]:
-    """
-    Multi-query retrieval for reformulation search.
-    Runs hybrid retrieval per query and returns merged dedup results + diagnostics.
-    """
-    if not queries:
-        return [], compute_retrieval_diagnostics("", [], [])
 
-    merged: dict[int, dict] = {}
-    for q in queries:
-        for doc in hybrid_search(q, top_k=top_k, document_ids=document_ids):
-            existing = merged.get(doc["id"])
-            if existing is None or doc["score"] > existing["score"]:
-                merged[doc["id"]] = doc
-
-    docs = sorted(merged.values(), key=lambda d: d.get("score", 0.0), reverse=True)[:top_k]
-    diagnostics = compute_retrieval_diagnostics(queries[0], queries, docs)
-    return docs, diagnostics

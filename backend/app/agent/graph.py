@@ -16,7 +16,6 @@ import time
 import asyncio
 from typing import Any, TypedDict
 
-import numpy as np
 from langgraph.graph import END, StateGraph
 
 from app.agent.metacognitive import (
@@ -31,10 +30,11 @@ from app.agent.planner import plan_query
 from app.agent.reader import read_documents
 from app.agent.writer import write_answer
 from app.config import settings
-from app.optimization.bandit import compute_reward, estimate_cost
+from app.cost import estimate_cost
 from app.optimization.evaluator import evaluate_answer
 from app.research.evidence_graph import build_evidence_graph
-from app.retrieval.hybrid import hybrid_search, hybrid_search_multi
+from app.retrieval.hybrid import hybrid_search
+from app.retrieval.diagnostics import compute_retrieval_diagnostics
 from app.retrieval.reranker import rerank
 from app.retrieval.guardrails import filter_retrieved_docs
 from app.verification.claim_extractor import extract_claims
@@ -57,13 +57,11 @@ class AgentState(TypedDict):
 
     # Retrieval tracking
     current_query: str         # original query
-    query_variants: list[str]  # 1 element after rewrite
     hop: int                   # number of retrieve calls made
 
     # Accumulated results
     all_docs: list[dict]
     evidence: list[str]
-    followup_query: str | None
     claims: list[str]
 
     # Control / observability
@@ -80,8 +78,7 @@ class AgentState(TypedDict):
     answer_completeness: float
     cost: float
     latency: float
-    utility: float
-    retry_count: int
+    latency: float
 
     # Internal cost tracking
     start_time: float
@@ -89,16 +86,16 @@ class AgentState(TypedDict):
     total_output_chars: int
 
     # Metacognitive state (Paper §4)
-    diagnosis: str                       # knowledge category from evaluator-critic
-    diagnosis_reasoning: str             # explanation from diagnosis
-    error_types: list[str]              # detected error patterns (declarative knowledge)
-    internal_sufficient: bool            # procedural: LLM knows the answer?
-    external_sufficient: bool            # procedural: docs contain the answer?
-    writing_directive: str | None        # prompt modifier for targeted remediation
-    metacognitive_round: int             # current iteration (Paper §6.5)
-    previous_answer: str                 # for convergence detection
-    diagnosis_suggested_query: str | None  # sub-query for re-retrieval
-    diagnosis_suggestion: str | None     # custom corrective suggestion
+    diagnosis: str                        # knowledge category from evaluator-critic
+    diagnosis_reasoning: str              # explanation from diagnosis
+    error_types: list[str]                # detected error patterns (declarative knowledge)
+    internal_sufficient: bool             # procedural: LLM knows the answer?
+    external_sufficient: bool             # procedural: docs contain the answer?
+    writing_directive: str | None         # prompt modifier for targeted remediation
+    metacognitive_round: int              # current iteration (Paper §6.5)
+    previous_answer: str                  # for convergence detection
+    diagnosis_suggested_query: str | None # sub-query for re-retrieval
+    diagnosis_suggestion: str | None      # custom corrective suggestion
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -110,22 +107,18 @@ async def plan_node(state: AgentState) -> dict[str, Any]:
     comp = result.get("complexity", "simple")
     
     # We strictly enforce raw query usage for academic benchmark integrity
-    final_query = state["query"]
     cfg = ROUTING_CONFIGS.get(comp, ROUTING_CONFIGS["simple"])
 
     return {
         "complexity": comp,
         "max_hops": cfg["max_hops"],
         "current_query": state["query"],
-        "query_variants": [final_query],
         "hop": 0,
         "all_docs": [],
         "evidence": [],
-        "followup_query": None,
         "claims": [],
         "retrieval_diagnostics": {},
         "evaluator_confidence": 0.5,
-        "retry_count": 0,
         "start_time": time.monotonic(),
         "total_input_chars": len(state["query"]) * 2,  # plan prompt approx
         "total_output_chars": 50,
@@ -144,7 +137,7 @@ async def plan_node(state: AgentState) -> dict[str, Any]:
 
 
 async def retrieve_node(state: AgentState) -> dict[str, Any]:
-    query_to_use = state["followup_query"] if state["hop"] > 0 and state.get("followup_query") else state["query_variants"][0]
+    query_to_use = state["current_query"]
     
     comp = state.get("complexity", "simple")
     cfg = ROUTING_CONFIGS.get(comp, ROUTING_CONFIGS["simple"])
@@ -157,7 +150,7 @@ async def retrieve_node(state: AgentState) -> dict[str, Any]:
         top_k=fetch_k,
         document_ids=state.get("document_ids"),
     )
-    diagnostics = {"query_coverage": 0.0, "document_diversity": 0.0, "retrieval_redundancy": 0.0, "estimated_recall_proxy": 0.0}
+    diagnostics = compute_retrieval_diagnostics(query_to_use, new_docs)
 
     if cfg["rerank"] and new_docs:
         new_docs = rerank(query_to_use, new_docs, top_k=cfg["top_k"])
@@ -173,7 +166,6 @@ async def retrieve_node(state: AgentState) -> dict[str, Any]:
     return {
         "all_docs": all_docs,
         "retrieval_diagnostics": diagnostics,
-        "followup_query": None,   # consumed
         "hop": state.get("hop", 0) + 1,
     }
 
@@ -186,7 +178,6 @@ async def read_node(state: AgentState) -> dict[str, Any]:
 
     return {
         "evidence": state["evidence"] + result.get("evidence", []),
-        "followup_query": result.get("followup_query"),
         "total_input_chars": state["total_input_chars"] + prompt_len,
         "total_output_chars": state["total_output_chars"] + answer_len,
     }
@@ -240,16 +231,6 @@ async def evaluate_node(state: AgentState) -> dict[str, Any]:
 
     latency = time.monotonic() - state["start_time"]
     cost = estimate_cost(state["total_input_chars"], state["total_output_chars"])
-    utility = compute_reward(
-        faithfulness=faithfulness,
-        citation_precision=state.get("citation_precision", 0.0),
-        answer_completeness=answer_completeness,
-        latency=latency,
-        w1=settings.reward_w1_faithfulness,
-        w2=settings.reward_w2_citation_precision,
-        w3=settings.reward_w3_answer_completeness,
-        w4=settings.reward_w4_latency_penalty,
-    )
 
     return {
         "faithfulness": faithfulness,
@@ -257,7 +238,6 @@ async def evaluate_node(state: AgentState) -> dict[str, Any]:
         "evaluator_confidence": evaluator_confidence,
         "cost": cost,
         "latency": round(latency, 2),
-        "utility": utility,
     }
 
 
@@ -291,16 +271,6 @@ async def parallel_verify_and_evaluate_node(state: AgentState) -> dict[str, Any]
 
     latency = time.monotonic() - state["start_time"]
     cost = estimate_cost(state["total_input_chars"], state["total_output_chars"])
-    utility = compute_reward(
-        faithfulness=faithfulness,
-        citation_precision=citation_metrics.get("citation_precision", 0.0),
-        answer_completeness=answer_completeness,
-        latency=latency,
-        w1=settings.reward_w1_faithfulness,
-        w2=settings.reward_w2_citation_precision,
-        w3=settings.reward_w3_answer_completeness,
-        w4=settings.reward_w4_latency_penalty,
-    )
 
     return {
         "claims": claims_result,
@@ -313,7 +283,6 @@ async def parallel_verify_and_evaluate_node(state: AgentState) -> dict[str, Any]
         "evaluator_confidence": evaluator_confidence,
         "cost": cost,
         "latency": round(latency, 2),
-        "utility": utility,
     }
 
 
@@ -359,7 +328,6 @@ async def remediate_node(state: AgentState) -> dict[str, Any]:
     updates: dict[str, Any] = {
         "metacognitive_round": state["metacognitive_round"] + 1,
         "previous_answer": state["answer"],
-        "retry_count": state["retry_count"] + 1,
     }
 
     if diag.category == INSUFFICIENT and diag.suggested_query:
@@ -478,11 +446,9 @@ def build_initial_state(
         "complexity": "simple",
         "max_hops": 1,
         "current_query": query,
-        "query_variants": [query],
         "hop": 0,
         "all_docs": [],
         "evidence": [],
-        "followup_query": None,
         "claims": [],
         "retrieval_diagnostics": {},
         "evaluator_confidence": 0.5,
@@ -495,8 +461,6 @@ def build_initial_state(
         "answer_completeness": 0.0,
         "cost": 0.0,
         "latency": 0.0,
-        "utility": 0.0,
-        "retry_count": 0,
         "start_time": time.monotonic(),
         "total_input_chars": 0,
         "total_output_chars": 0,

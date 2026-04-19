@@ -9,6 +9,7 @@ Implements the three-phase metacognitive regulation pipeline:
 Integrated into the existing LangGraph pipeline as diagnose_node / remediate_node.
 """
 
+import logging
 from dataclasses import dataclass, field
 
 from langchain_core.messages import HumanMessage
@@ -16,6 +17,8 @@ from langchain_core.messages import HumanMessage
 from app.config import settings
 from app.llm import ainvoke
 from app.text_utils import extract_json_object
+
+logger = logging.getLogger(__name__)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -216,8 +219,8 @@ async def diagnose_answer(
                 suggested_query=result.get("suggested_query"),
                 suggestion=result.get("suggestion"),
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to parse metacognitive diagnosis LLM output: {e}", exc_info=True)
 
     # Heuristic fallback when LLM diagnosis fails
     return _heuristic_diagnosis(query, faithfulness, completeness, citation_precision)

@@ -36,7 +36,6 @@ class RetrievedDocumentRead(BaseModel):
 
 
 class QueryProvenance(BaseModel):
-    query_variants: list[str] = Field(default_factory=list)
     evidence_spans: list[str] = Field(default_factory=list)
     followup_query: str | None = None
     retrieved_documents: list[RetrievedDocumentRead] = Field(default_factory=list)
@@ -50,7 +49,6 @@ class RunMetrics(BaseModel):
     answer_completeness: float = 0.0
     cost: float
     latency: float
-    utility: float
     config: str
     query_type: str
     hops: int

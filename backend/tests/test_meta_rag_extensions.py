@@ -8,31 +8,8 @@ def test_utcnow_naive_matches_timestamp_without_timezone_columns():
     assert timestamp.tzinfo is None
 
 
-def test_query_rewriter_generates_multiple_queries():
-    from app.retrieval.query_rewriter import QueryRewriter
-
-    rw = QueryRewriter()
-    rewrites = rw.rewrite("impact of transformers on NLP", query_type="multi_hop", num_rewrites=5)
-    assert 3 <= len(rewrites) <= 5
-    assert rewrites[0].lower().startswith("impact of transformers")
 
 
-def test_hybrid_multi_query_improves_union_recall(monkeypatch):
-    from app.retrieval import hybrid
-
-    # Query-specific synthetic results to emulate reformulation gains.
-    query_to_docs = {
-        "q1": [{"id": 1, "text": "a", "source": "s1", "score": 0.9}],
-        "q2": [{"id": 2, "text": "b", "source": "s2", "score": 0.9}],
-    }
-
-    def fake_hybrid_search(query, top_k=10, document_ids=None):
-        return query_to_docs.get(query, [])
-
-    monkeypatch.setattr(hybrid, "hybrid_search", fake_hybrid_search)
-    docs, _diag = hybrid.hybrid_search_multi(["q1", "q2"], top_k=10)
-    ids = {d["id"] for d in docs}
-    assert ids == {1, 2}
 
 
 def test_citation_verifier_detects_unsupported_claims():

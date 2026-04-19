@@ -1,7 +1,11 @@
+import logging
+
 from langchain_core.messages import HumanMessage
 
 from app.llm import ainvoke
 from app.text_utils import extract_json_object
+
+logger = logging.getLogger(__name__)
 
 
 MULTI_EVAL_PROMPT = """\
@@ -40,8 +44,8 @@ async def evaluate_answer(query: str, answer: str, context: str) -> dict:
                 "confidence": max(0.0, min(1.0, float(result.get("confidence", 0.5)))),
                 "reasoning": str(result.get("reasoning", "")),
             }
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to parse evaluator LLM output: {e}", exc_info=True)
     return {
         "faithfulness": 0.5,
         "answer_completeness": 0.5,

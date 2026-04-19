@@ -17,7 +17,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Autonomous Research Agent",
-    description="Optimized RAG pipeline with Rule-based routing.",
+    description="Deterministic LLM Routing",
     version="0.1.0",
     lifespan=lifespan,
 )

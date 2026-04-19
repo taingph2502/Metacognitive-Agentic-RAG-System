@@ -19,7 +19,7 @@ a JSONL file for benchmark cost reporting.
 import json
 import logging
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -81,6 +81,16 @@ def compute_gemini_cost(
         prompt_tokens * PRICE_GEMINI_PROMPT
         + completion_tokens * PRICE_GEMINI_COMPLETION
     ) / 1_000_000
+
+
+def estimate_cost(input_chars: int, output_chars: int) -> float:
+    """
+    Rough cost estimate using Gemini 2.5 Flash pricing.
+    ~4 chars per token. Input: $0.075/1M, Output: $0.30/1M tokens.
+    """
+    input_tokens = input_chars / 4
+    output_tokens = output_chars / 4
+    return input_tokens * 0.075 / 1_000_000 + output_tokens * 0.30 / 1_000_000
 
 
 class CostTracker:
@@ -203,8 +213,8 @@ async def fetch_deepseek_balance(api_key: str) -> dict | None:
                     "total_balance": float(info.get("total_balance", 0)),
                     "topped_up_balance": float(info.get("topped_up_balance", 0)),
                 }
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Failed to fetch DeepSeek balance: {e}", exc_info=True)
     return None
 
 

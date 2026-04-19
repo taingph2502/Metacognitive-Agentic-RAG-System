@@ -40,23 +40,15 @@ class Settings(BaseSettings):
     faithfulness_threshold: float = 0.7
     completeness_threshold: float = 0.6
     citation_precision_threshold: float = 0.4
-    lambda_cost: float = 0.3
-    lambda_latency: float = 0.2
+    citation_precision_threshold: float = 0.4
 
     # Constraints
     max_latency_seconds: float = 15.0
 
     # Retrieval intelligence / control
-    default_rewrite_count: int = 4
     evidence_coverage_threshold: float = 0.45
     min_retrieval_diversity: float = 0.25
     evaluator_confidence_threshold: float = 0.4
-
-    # Multi-metric reward weights
-    reward_w1_faithfulness: float = 0.45
-    reward_w2_citation_precision: float = 0.3
-    reward_w3_answer_completeness: float = 0.2
-    reward_w4_latency_penalty: float = 0.15
 
     # Metacognitive regulation (Paper §4, §6.5)
     max_metacognitive_rounds: int = 3
