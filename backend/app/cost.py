@@ -1,16 +1,11 @@
 """
-Per-call cost logging for LLM API usage (DeepSeek V3 + Gemini 2.5 Flash).
+Per-call cost logging for DeepSeek V3.2 API usage.
 
-Tracks token usage and calculates cost per call using each provider's pricing:
+Tracks token usage and calculates cost per call using DeepSeek pricing:
 
-DeepSeek V3:
   - Cache hit:  $0.028  / 1M tokens
   - Cache miss: $0.28   / 1M tokens
   - Completion: $0.42   / 1M tokens
-
-Gemini 2.5 Flash:
-  - Prompt:     $0.30   / 1M tokens
-  - Completion: $2.50   / 1M tokens
 
 Cost data is accumulated in-memory per session and can be flushed to
 a JSONL file for benchmark cost reporting.
@@ -29,10 +24,6 @@ logger = logging.getLogger(__name__)
 PRICE_CACHE_HIT = 0.028
 PRICE_CACHE_MISS = 0.28
 PRICE_COMPLETION = 0.42
-
-# Gemini 2.5 Flash pricing (USD per 1M tokens)
-PRICE_GEMINI_PROMPT = 0.30
-PRICE_GEMINI_COMPLETION = 2.50
 
 
 @dataclass
@@ -72,25 +63,21 @@ def compute_call_cost(
     ) / 1_000_000
 
 
-def compute_gemini_cost(
-    prompt_tokens: int,
-    completion_tokens: int,
-) -> float:
-    """Calculate USD cost for a single Gemini API call."""
-    return (
-        prompt_tokens * PRICE_GEMINI_PROMPT
-        + completion_tokens * PRICE_GEMINI_COMPLETION
-    ) / 1_000_000
+# Rough blended prompt price: average of cache-hit and cache-miss rates
+_DEEPSEEK_BLENDED_PROMPT_RATE = (PRICE_CACHE_HIT + PRICE_CACHE_MISS) / 2  # ≈ $0.154 / 1M tokens
 
 
 def estimate_cost(input_chars: int, output_chars: int) -> float:
     """
-    Rough cost estimate using Gemini 2.5 Flash pricing.
-    ~4 chars per token. Input: $0.075/1M, Output: $0.30/1M tokens.
+    Rough cost estimate using DeepSeek pricing.
+    ~4 chars per token. Blended prompt rate, completion rate.
     """
-    input_tokens = input_chars / 4
-    output_tokens = output_chars / 4
-    return input_tokens * 0.075 / 1_000_000 + output_tokens * 0.30 / 1_000_000
+    prompt_tokens = input_chars / 4
+    completion_tokens = output_chars / 4
+    return (
+        prompt_tokens * _DEEPSEEK_BLENDED_PROMPT_RATE
+        + completion_tokens * PRICE_COMPLETION
+    ) / 1_000_000
 
 
 class CostTracker:
@@ -108,11 +95,7 @@ class CostTracker:
         completion_tokens: int = 0,
         provider: str = "",
     ) -> CallCostEntry:
-        if provider == "gemini":
-            # For Gemini: cache_miss_tokens holds prompt tokens (no cache split)
-            cost = compute_gemini_cost(cache_miss_tokens, completion_tokens)
-        else:
-            cost = compute_call_cost(cache_hit_tokens, cache_miss_tokens, completion_tokens)
+        cost = compute_call_cost(cache_hit_tokens, cache_miss_tokens, completion_tokens)
         entry = CallCostEntry(
             timestamp=datetime.now(timezone.utc).isoformat(),
             call_site=call_site,

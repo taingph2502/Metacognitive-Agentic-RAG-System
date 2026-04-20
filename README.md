@@ -1,28 +1,34 @@
 # Meta-RAG: Metacognitive Retrieval-Augmented Generation
 
-> A LangGraph implementation of the [MetaRAG paper](https://arxiv.org/abs/2402.11626) with a three-phase metacognitive regulation loop, Thompson Sampling retrieval optimization, and hybrid dense–sparse retrieval — evaluated on HotpotQA and 2WikiMultiHopQA against all paper baselines.
+> A LangGraph implementation of the [MetaRAG paper](https://arxiv.org/abs/2402.11626) with a three-phase metacognitive regulation loop and hybrid dense–sparse retrieval — evaluated on HotpotQA and 2WikiMultiHopQA against all paper baselines.
 
 [![Python](https://img.shields.io/badge/python-3.13%2B-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![arXiv](https://img.shields.io/badge/arXiv-2402.11626-b31b1b)](https://arxiv.org/abs/2402.11626)
 [![LangGraph](https://img.shields.io/badge/LangGraph-0.2%2B-orange)](https://github.com/langchain-ai/langgraph)
 
-<div style="display: flex; flex-wrap: wrap; gap: 10px;">
+<!-- <div style="display: flex; flex-wrap: wrap; gap: 10px;">
   <img src="docs\diagrams\pipeline1_ingestion.png" style="width:42%;">
   <img src="docs\diagrams\pipeline2_query_processing.png" style="width:54%;">
   <img src="docs\diagrams\pipeline3_metacognitive_loop.png" style="width:42%;">
   <img src="docs\diagrams\pipeline4_bandit_optimization.png" style="width:54%;">
-</div>
+</div> -->
 
 ---
 
-## Abstract
+## 1. Abstract
 
-Multi-hop question answering over retrieved documents requires more than a single retrieval-generation pass: models must recognize when their own answer is inadequate and understand _why_. This work implements and extends the MetaRAG framework (Yao et al., 2024), which introduces a three-phase metacognitive regulation loop — monitoring, evaluating, and planning — directly into the RAG pipeline. The system classifies answer failures into four knowledge-deficit categories (insufficient knowledge, internal-only, external-only, reasoning error) and applies category-specific remediation strategies including targeted re-retrieval and constrained writing directives. Evaluated on 500 examples from HotpotQA and 2WikiMultiHopQA under the gold-context protocol with DeepSeek V3.2, the implementation achieves **59.0 EM / 75.1 F1** on HotpotQA and **66.2 EM / 74.2 F1** on 2WikiMultiHopQA, surpassing the paper's reported MetaRAG results (37.8 / 49.9 and 42.8 / 50.8 respectively) by 21–23 EM points and 23–25 F1 points. The performance differential is attributable to DeepSeek V3.2's substantially greater reasoning capacity relative to the GPT-3.5-turbo baseline used in the paper; the metacognitive loop design follows the paper's specification faithfully.
+Multi-hop question answering over retrieved documents requires more than a single retrieval-generation pass: models must recognize when their own answer is inadequate and understand _why_.
+
+This work implements and extends the MetaRAG framework (Yao et al., 2024), which introduces a three-phase metacognitive regulation loop — monitoring, evaluating, and planning — directly into the RAG pipeline. The system classifies answer failures into four knowledge-deficit categories (insufficient knowledge, internal-only, external-only, reasoning error) and applies category-specific remediation strategies including targeted re-retrieval and constrained writing directives.
+
+Evaluated on 500 examples from HotpotQA and 2WikiMultiHopQA under the gold-context protocol with DeepSeek V3.2, the implementation achieves **59.0 EM / 75.1 F1** on HotpotQA and **66.2 EM / 74.2 F1** on 2WikiMultiHopQA, surpassing the paper's reported MetaRAG results (37.8 / 49.9 and 42.8 / 50.8 respectively) by 21–23 EM points and 23–25 F1 points.
+
+The performance differential is attributable to DeepSeek V3.2's substantially greater reasoning capacity relative to the GPT-3.5-turbo baseline used in the paper; the metacognitive loop design follows the paper's specification faithfully.
 
 ---
 
-## Tech Stack
+## 2. Tech Stack
 
 | Technology                       | Version            | Responsibility                                                                      |
 | -------------------------------- | ------------------ | ----------------------------------------------------------------------------------- |
@@ -33,21 +39,19 @@ Multi-hop question answering over retrieved documents requires more than a singl
 | **Uvicorn**                      | ≥ 0.32             | ASGI server                                                                         |
 | **Qdrant**                       | ≥ 1.12             | Vector store for dense (embedding) retrieval                                        |
 | **Elasticsearch**                | 8.17               | Inverted-index BM25 sparse retrieval                                                |
-| **PostgreSQL 16**                | via asyncpg        | Document metadata storage                                                           |
+| **PostgreSQL 16**                | via asyncpg        | Document metadata and analytics storage                                             |
 | **sentence-transformers**        | ≥ 3.3              | Local embedding (`BAAI/bge-small-en-v1.5`) and reranking (`BAAI/bge-reranker-base`) |
 | **PyMuPDF**                      | ≥ 1.25             | PDF ingestion and text extraction                                                   |
-| **DeepSeek V3.2**                | `deepseek-chat`    | Primary LLM (OpenAI-compatible API)                                                 |
-| **Google Gemini 2.5 Flash**      | `gemini-2.5-flash` | Alternative LLM provider                                                            |
-| **NumPy**                        | ≥ 2.0              | Thompson Sampling Beta distribution draws                                           |
+| **DeepSeek V3.2**                | `deepseek-chat`    | Primary and sole LLM (OpenAI-compatible API)                                              |
 | **Pydantic / pydantic-settings** | ≥ 2.10 / ≥ 2.7     | Configuration management and data validation                                        |
 | **uv**                           | —                  | Fast Python package and environment manager                                         |
 | **Docker Compose**               | —                  | Infrastructure orchestration (Qdrant, Elasticsearch, PostgreSQL, API)               |
 
 ---
 
-## Architecture Overview
+## 3. Architecture Overview
 
-The system implements a LangGraph state machine with fifteen distinct processing nodes arranged into four logical pipelines: ingestion, query processing, metacognitive regulation, and retrieval optimization. Each query traverses the graph as a typed `AgentState` dictionary, with conditional edges controlling multi-hop retrieval and the metacognitive remediation loop.
+The system implements a LangGraph state machine with eleven processing nodes. In the default parallel mode, the post-write verification stack (claim extraction, citation verification, evidence graph, and LLM evaluation) collapses into a single `parallel_verify_and_evaluate_node`. In sequential mode (when `DISABLE_PARALLEL=true`), each step runs as a separate node. Each query traverses the graph as a typed `AgentState` dictionary, with conditional edges controlling multi-hop retrieval and the metacognitive remediation loop.
 
 ### End-to-End Pipeline
 
@@ -57,13 +61,8 @@ The system implements a LangGraph state machine with fifteen distinct processing
                               └────────┬────────┘
                                        │
                                ┌───────▼───────┐
-                               │     plan      │  classify query type,
-                               │               │  select bandit config
-                               └───────┬───────┘
-                                       │
-                               ┌───────▼───────┐
-                               │ query_rewrite │  HyDE / LLM / rule-based
-                               │               │  query reformulation
+                               │     plan      │  classify query complexity
+                               │               │  (simple/complex/multi-hop)
                                └───────┬───────┘
                                        │
                                ┌───────▼───────┐
@@ -72,26 +71,20 @@ The system implements a LangGraph state machine with fifteen distinct processing
                                └───────┬───────┘
                                        │
                                ┌───────▼───────┐
-                               │     read      │  evidence extraction,
-                               │               │  coverage estimation
+                               │     read      │  evidence extraction
+                               │               │  from retrieved docs
                                └───────┬───────┘
                                        │
                                ┌───────▼───────┐
-             ┌── extra_hop ────┤  controller   │  evidence coverage gate,
-             │                 │               │  multi-hop routing
-             │                 └───────┬───────┘
-             │                   stop  │
-             └──► query_rewrite        │
-                                ┌──────▼──────┐
-                                │    write    │  answer generation with
-                                │             │  optional writing directive
-                                └──────┬──────┘
+                               │     write     │  grounded answer generation
+                               │               │  with inline citations
+                               └───────┬───────┘
                                        │
                           ┌────────────▼────────────┐
                           │  verify_and_evaluate    │  claim extraction,
-                          │  (parallel node)        │  citation verification,
-                          │                         │  evidence graph,
-                          │                         │  LLM faithfulness eval
+                          │  (parallel)           │  citation verification,
+                          │                        │  evidence graph,
+                          │                        │  LLM faithfulness eval
                           └────────────┬────────────┘
                                        │
                                ┌───────▼───────┐
@@ -99,16 +92,16 @@ The system implements a LangGraph state machine with fifteen distinct processing
                                │               │  + evaluating (§4.1–4.2)
                                └───────┬───────┘
                                        │
-              satisfactory? ───────────┤
-              converged?               │  needs remediation
-              max rounds hit?          │
+              satisfactory? ───────────────┤
+              converged?                  │  needs remediation
+              max rounds hit?             │
                     │          ┌───────▼───────┐
-                    │          │  remediate    │  category-specific planning
-                    │          │               │  (§4.3): re-retrieval or
+                    │          │   remediate   │  category-specific planning
+                    │          │              │  (§4.3): targeted re-retrieval or
                     │          └───────┬───────┘  writing directive
                     │                  │
                     │          ┌───────▼───────┐
-                    │          │    write      │  re-generation with directive
+                    │          │    write     │  re-generation with directive
                     │          └───────┬───────┘
                     │                  │  (loop back to verify_and_evaluate)
                     │
@@ -119,37 +112,49 @@ The system implements a LangGraph state machine with fifteen distinct processing
 
 ### Component Table
 
-| Module                              | Location                                        | Responsibility                                                                                            |
-| ----------------------------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `AgentState`                        | `backend/app/agent/graph.py`                    | Typed state dictionary shared across all graph nodes                                                      |
-| `plan_node`                         | `backend/app/agent/graph.py`                    | Classifies query type, selects initial bandit retrieval config                                            |
-| `query_rewrite_node`                | `backend/app/agent/graph.py`                    | Generates query variants via HyDE, LLM, or rule-based rewrites                                            |
-| `retrieve_node`                     | `backend/app/agent/graph.py`                    | Dispatches hybrid search (single or multi-query), applies reranker and guardrails                         |
-| `read_node`                         | `backend/app/agent/graph.py`                    | Extracts evidence from retrieved docs, estimates coverage                                                 |
-| `controller_node`                   | `backend/app/agent/graph.py`                    | Routes to an additional retrieval hop, reformulation, abstention, or generation                           |
-| `write_node`                        | `backend/app/agent/graph.py`                    | Generates the answer; appends `writing_directive` on metacognitive rounds                                 |
-| `parallel_verify_and_evaluate_node` | `backend/app/agent/graph.py`                    | Concurrently runs claim extraction, citation verification, evidence graph, and LLM evaluation             |
-| `diagnose_node`                     | `backend/app/agent/graph.py`                    | Invokes the metacognitive monitor and evaluator-critic; populates diagnosis state                         |
-| `remediate_node`                    | `backend/app/agent/graph.py`                    | Applies targeted remediation: targeted re-retrieval for `INSUFFICIENT`, writing directives for all others |
-| `diagnose_answer`                   | `backend/app/agent/metacognitive.py`            | Three-phase metacognitive regulation: monitoring gate → evaluator-critic LLM → heuristic fallback         |
-| `build_writing_directive`           | `backend/app/agent/metacognitive.py`            | Maps diagnosis category to a concrete writing instruction                                                 |
-| `check_convergence`                 | `backend/app/agent/metacognitive.py`            | Jaccard similarity convergence detection between consecutive answers                                      |
-| `hybrid_search`                     | `backend/app/retrieval/hybrid.py`               | Reciprocal Rank Fusion of dense (Qdrant) and sparse (BM25/Elasticsearch) results                          |
-| `QueryRewriter`                     | `backend/app/retrieval/query_rewriter.py`       | Produces query variants via rule-based decomposition and LLM-based reformulation                          |
-| `rerank`                            | `backend/app/retrieval/reranker.py`             | Cross-encoder reranking via `BAAI/bge-reranker-base`                                                      |
-| `filter_retrieved_docs`             | `backend/app/retrieval/guardrails.py`           | Filters low-quality, duplicate, or unsafe retrieved chunks                                                |
-| `verify_citations`                  | `backend/app/verification/citation_verifier.py` | Computes citation precision, unsupported claim rate, and evidence alignment score                         |
-| `ThompsonSamplingBandit`            | `backend/app/optimization/bandit.py`            | Beta-Bernoulli Thompson Sampling over four retrieval configurations                                       |
-| `evaluate_answer`                   | `backend/app/optimization/evaluator.py`         | LLM-based faithfulness, completeness, and confidence scoring                                              |
-| `build_evidence_graph`              | `backend/app/research/evidence_graph.py`        | Constructs claim–document support graph for interpretability                                              |
-| `decide_next_action`                | `backend/app/research/controller.py`            | Evidence coverage and diversity signals → routing decision                                                |
-| Ingestion pipeline                  | `backend/app/ingestion/pipeline.py`             | PDF/DOCX/HTML chunking → Qdrant dense upsert + Elasticsearch BM25 index                                   |
-| Settings                            | `backend/app/config.py`                         | Pydantic-settings configuration with `.env` override                                                      |
-| Benchmark runner                    | `backend/benchmarks/runner.py`                  | Async parallel evaluation with gold-context and open-domain modes                                         |
+| Module                              | Location                                        | Responsibility                                                                                           |
+| ----------------------------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `AgentState`                        | `backend/app/agent/graph.py`                    | Typed state dictionary shared across all graph nodes                                                     |
+| `plan_node`                         | `backend/app/agent/graph.py`                    | Classifies query into simple/complex/multi-hop; selects retrieval routing config                         |
+| `retrieve_node`                     | `backend/app/agent/graph.py`                    | Dispatches hybrid RRF search; applies cross-encoder reranking and retrieval guardrails                   |
+| `read_node`                         | `backend/app/agent/graph.py`                    | Extracts evidence spans from retrieved documents                                                         |
+| `write_node`                        | `backend/app/agent/graph.py`                    | Generates the grounded answer; appends `writing_directive` on metacognitive remediation rounds           |
+| `parallel_verify_and_evaluate_node` | `backend/app/agent/graph.py`                    | Concurrently runs claim extraction, citation verification, evidence graph, and LLM evaluation            |
+| `diagnose_node`                     | `backend/app/agent/graph.py`                    | Invokes the metacognitive monitor and evaluator-critic; populates diagnosis state                        |
+| `remediate_node`                    | `backend/app/agent/graph.py`                    | Applies targeted remediation: targeted re-retrieval for `INSUFFICIENT`, writing directives for others    |
+| `claim_extract_node`                | `backend/app/agent/graph.py`                    | Segments the generated answer into individual factual claims (sequential mode only)                      |
+| `citation_verify_node`              | `backend/app/agent/graph.py`                    | Computes citation precision, unsupported claim rate, and evidence alignment score (sequential mode only) |
+| `evidence_graph_node`               | `backend/app/agent/graph.py`                    | Constructs claim–document support graph for interpretability (sequential mode only)                      |
+| `evaluate_node`                     | `backend/app/agent/graph.py`                    | LLM-based faithfulness, completeness, and confidence scoring (sequential mode only)                      |
+| `diagnose_answer`                   | `backend/app/agent/metacognitive.py`            | Three-phase metacognitive regulation: monitoring gate → evaluator-critic LLM → heuristic fallback        |
+| `build_writing_directive`           | `backend/app/agent/metacognitive.py`            | Maps diagnosis category to a concrete writing instruction                                                |
+| `check_convergence`                 | `backend/app/agent/metacognitive.py`            | Jaccard similarity convergence detection between consecutive answers                                     |
+| `plan_query`                        | `backend/app/agent/planner.py`                  | LLM-based query complexity classification (simple/complex/multi-hop) with rule-based fallback            |
+| `write_answer`                      | `backend/app/agent/writer.py`                   | Grounded answer generation with inline citations and optional writing directive injection                |
+| `read_documents`                    | `backend/app/agent/reader.py`                   | Evidence extraction from retrieved documents                                                             |
+| `hybrid_search`                     | `backend/app/retrieval/hybrid.py`               | Reciprocal Rank Fusion of dense (Qdrant) and sparse (BM25/Elasticsearch) results                         |
+| `dense_search`                      | `backend/app/retrieval/dense.py`                | Qdrant vector search with `BAAI/bge-small-en-v1.5` embeddings and document_id filtering                  |
+| `bm25_search`                       | `backend/app/retrieval/bm25_retrieval.py`       | Elasticsearch BM25 keyword search with document_id filtering                                             |
+| `rerank`                            | `backend/app/retrieval/reranker.py`             | Cross-encoder reranking via `BAAI/bge-reranker-base`                                                     |
+| `filter_retrieved_docs`             | `backend/app/retrieval/guardrails.py`           | Filters prompt injection patterns, adversarial content, and low-quality chunks                           |
+| `compute_retrieval_diagnostics`     | `backend/app/retrieval/diagnostics.py`          | Observability metrics: query coverage, document diversity, retrieval redundancy, recall proxy            |
+| `verify_citations`                  | `backend/app/verification/citation_verifier.py` | Computes citation precision, unsupported claim rate, and evidence alignment score                        |
+| `extract_claims`                    | `backend/app/verification/claim_extractor.py`   | Segments the generated answer into individual factual claims                                             |
+| `evaluate_answer`                   | `backend/app/optimization/evaluator.py`         | LLM-based faithfulness, completeness, and confidence scoring                                             |
+| `build_evidence_graph`              | `backend/app/research/evidence_graph.py`        | Lightweight claim–document support graph using token-overlap heuristic                                   |
+| `log_run`                           | `backend/app/memory/strategy_memory.py`         | Persists run records to PostgreSQL for analytics (faithfulness, cost, latency, utility)                  |
+| `log_retrieval_diagnostics`         | `backend/app/memory/strategy_memory.py`         | Persists retrieval observability metrics per query                                                       |
+| `log_provenance_snapshot`           | `backend/app/memory/strategy_memory.py`         | Persists full answer provenance snapshots including diagnosis, citations, and evidence graph             |
+| Ingestion pipeline                  | `backend/app/ingestion/pipeline.py`             | PDF/DOCX/HTML/TXT chunking → Qdrant dense upsert + Elasticsearch BM25 index                              |
+| Settings                            | `backend/app/config.py`                         | Pydantic-settings configuration with `.env` override                                                     |
+| LLM abstraction                     | `backend/app/llm.py`                            | DeepSeek LLM abstraction via OpenAI-compatible API                                                |
+| Cost tracking                       | `backend/app/cost.py`                           | Token cost estimation and DeepSeek balance monitoring                                                    |
+| API routes                          | `backend/app/api/routes.py`                     | FastAPI routers: query, stream, document management, ingestion, and analytics endpoints                  |
+| Benchmark runner                    | `backend/benchmarks/runner.py`                  | Async parallel evaluation with gold-context and open-domain modes                                        |
 
 ---
 
-## Metacognitive Loop
+## 4. Metacognitive Loop
 
 The metacognitive loop is the core algorithmic contribution. It wraps the standard RAG generation step with a three-phase regulation pipeline that decides whether an answer is acceptable, diagnoses the specific failure mode if not, and applies a targeted corrective strategy.
 
@@ -226,7 +231,7 @@ Standard RAG performs one retrieval pass and one generation pass with no quality
 
 ---
 
-## Benchmark Results
+## 5. Benchmark Results
 
 All results use the **gold-context evaluation protocol**: the dataset's supporting documents are provided directly to the pipeline, bypassing open-domain retrieval. This protocol isolates reasoning and metacognitive regulation quality from retrieval quality.
 
@@ -282,7 +287,7 @@ The +21–23 EM improvement over the paper's MetaRAG baseline reflects the LLM c
 
 ---
 
-## Project Structure
+## 6. Project Structure
 
 ```
 Meta-RAG/
@@ -290,64 +295,68 @@ Meta-RAG/
 │   ├── app/
 │   │   ├── agent/
 │   │   │   ├── graph.py           # LangGraph DAG: all nodes, edges, and conditional routing
-│   │   │   ├── metacognitive.py   # Three-phase metacognitive regulation (monitoring, evaluating, planning)
-│   │   │   ├── planner.py         # LLM-based query type classification and hop planning
+│   │   │   ├── metacognitive.py  # Three-phase metacognitive regulation (monitoring, evaluating, planning)
+│   │   │   ├── planner.py         # LLM-based query complexity classification
 │   │   │   ├── reader.py          # Evidence extraction from retrieved documents
-│   │   │   └── writer.py          # Answer generation with optional writing directive
+│   │   │   └── writer.py         # Answer generation with optional writing directive
 │   │   ├── retrieval/
 │   │   │   ├── hybrid.py          # Reciprocal Rank Fusion of dense + BM25 results
-│   │   │   ├── dense.py           # Qdrant vector search with BGE-small embeddings
-│   │   │   ├── bm25_retrieval.py  # Elasticsearch BM25 keyword search
-│   │   │   ├── query_rewriter.py  # Rule-based and LLM-based query reformulation
+│   │   │   ├── dense.py          # Qdrant vector search with BGE-small embeddings
+│   │   │   ├── bm25_retrieval.py # Elasticsearch BM25 keyword search
 │   │   │   ├── reranker.py        # Cross-encoder reranking (BGE-reranker-base)
 │   │   │   ├── guardrails.py      # Chunk filtering: safety, quality, deduplication
-│   │   │   └── diagnostics.py     # Retrieval quality metrics (coverage, diversity)
+│   │   │   └── diagnostics.py    # Retrieval quality metrics (coverage, diversity)
 │   │   ├── optimization/
-│   │   │   ├── bandit.py          # Thompson Sampling bandit over 4 retrieval configs
-│   │   │   └── evaluator.py       # LLM faithfulness + completeness scoring
+│   │   │   └── evaluator.py      # LLM faithfulness + completeness scoring
 │   │   ├── verification/
 │   │   │   ├── citation_verifier.py  # Citation precision and evidence alignment
 │   │   │   └── claim_extractor.py    # Claim segmentation from generated answers
 │   │   ├── research/
-│   │   │   ├── controller.py      # Evidence coverage → routing decision
-│   │   │   ├── coverage.py        # Evidence coverage estimation
-│   │   │   └── evidence_graph.py  # Claim–document support graph construction
+│   │   │   └── evidence_graph.py    # Claim–document support graph construction
+│   │   ├── memory/
+│   │   │   └── strategy_memory.py  # PostgreSQL analytics persistence
 │   │   ├── ingestion/
-│   │   │   └── pipeline.py        # Document chunking → Qdrant + Elasticsearch indexing
-│   │   ├── api/                   # FastAPI routers (query, ingest, bandit state endpoints)
-│   │   ├── config.py              # Pydantic-settings configuration
-│   │   ├── llm.py                 # LLM provider abstraction (DeepSeek / Gemini)
-│   │   ├── cost.py                # Token cost tracking and DeepSeek balance monitoring
-│   │   └── main.py                # FastAPI application factory
+│   │   │   └── pipeline.py          # Document chunking → Qdrant + Elasticsearch indexing
+│   │   ├── api/
+│   │   │   └── routes.py            # FastAPI routers: query, stream, documents, ingest, analytics
+│   │   ├── models/
+│   │   │   ├── schemas.py          # Pydantic request/response schemas
+│   │   │   └── db_models.py        # SQLAlchemy ORM models
+│   │   ├── config.py               # Pydantic-settings configuration
+│   │   ├── llm.py                  # DeepSeek LLM abstraction via OpenAI-compatible API
+│   │   ├── cost.py                 # Token cost tracking
+│   │   ├── database.py              # Async SQLAlchemy session management
+│   │   ├── text_utils.py           # Shared text utilities
+│   │   └── main.py                 # FastAPI application factory
 │   ├── benchmarks/
-│   │   ├── runner.py              # Async benchmark runner with gold and open-domain modes
-│   │   ├── datasets.py            # HotpotQA and 2WikiMultiHopQA data loaders
-│   │   ├── metrics.py             # EM, F1, Precision, Recall computation
-│   │   ├── compare.py             # Paper baseline comparison utilities
+│   │   ├── runner.py               # Async benchmark runner with gold and open-domain modes
+│   │   ├── datasets.py             # HotpotQA and 2WikiMultiHopQA data loaders
+│   │   ├── metrics.py              # EM, F1, Precision, Recall computation
+│   │   ├── compare.py              # Paper baseline comparison utilities
 │   │   └── results/
 │   │       └── reports/
-│   │           └── final_report.md  # Official benchmark results
-│   ├── tests/                     # pytest test suite
-│   ├── pyproject.toml             # Project metadata and dependencies (uv)
-│   └── Dockerfile                 # Backend container
-├── frontend/                      # Web UI
+│   │           └── final_report.md # Official benchmark results
+│   ├── tests/                      # pytest test suite
+│   ├── pyproject.toml              # Project metadata and dependencies (uv)
+│   └── Dockerfile                  # Backend container
+├── frontend/                       # Web UI
 ├── docs/
 │   ├── diagrams/                  # draw.io architecture diagrams (4 pipelines)
 │   └── papers/                    # Source paper (MetaRAG, arXiv:2402.11626)
-├── docker-compose.yml             # Qdrant + Elasticsearch + PostgreSQL + API
-├── .env.example                   # Configuration template
+├── docker-compose.yml               # Qdrant + Elasticsearch + PostgreSQL + API
+├── .env.example                    # Configuration template
 └── README.md
 ```
 
 ---
 
-## Quickstart
+## 7. Quickstart
 
 ### Prerequisites
 
 - [uv](https://docs.astral.sh/uv/) (Python package manager)
 - [Docker](https://www.docker.com/) and Docker Compose
-- A DeepSeek API key ([platform.deepseek.com](https://platform.deepseek.com)) or a Gemini API key
+- A DeepSeek API key ([platform.deepseek.com](https://platform.deepseek.com))
 
 ### 1. Clone and configure
 
@@ -355,7 +364,7 @@ Meta-RAG/
 git clone <repository-url>
 cd Meta-RAG
 cp .env.example .env
-# Edit .env: set DEEPSEEK_API_KEY (or GEMINI_API_KEY + LLM_PROVIDER=gemini)
+# Edit .env: set DEEPSEEK_API_KEY
 ```
 
 ### 2. Start infrastructure
@@ -391,7 +400,7 @@ Upload PDFs or other documents via the `/ingest` endpoint, or use the ingestion 
 
 ---
 
-## Running Benchmarks
+## 8. Running Benchmarks
 
 Benchmarks require the infrastructure services (`qdrant`, `elasticsearch`, `postgres`) to be running. All commands are run from the `backend/` directory.
 
@@ -399,26 +408,20 @@ Benchmarks require the infrastructure services (`qdrant`, `elasticsearch`, `post
 
 ```bash
 # HotpotQA, 500 examples, 20 concurrent queries
-uv run python -m benchmarks.runner --dataset hotpotqa --mode gold --n 500 --provider deepseek --concurrency 20
+uv run python -m benchmarks.runner --dataset hotpotqa --mode gold --n 500 --concurrency 20
 
 # 2WikiMultiHopQA, 500 examples
-uv run python -m benchmarks.runner --dataset 2wikimultihopqa --mode gold --n 500 --provider deepseek --concurrency 20
+uv run python -m benchmarks.runner --dataset 2wikimultihopqa --mode gold --n 500 --concurrency 20
 
 # Both datasets sequentially
-uv run python -m benchmarks.runner --dataset both --mode gold --n 500 --provider deepseek --concurrency 20
+uv run python -m benchmarks.runner --dataset both --mode gold --n 500 --concurrency 20
 ```
 
 ### Open-domain evaluation (full retrieval pipeline)
 
 ```bash
 # Ingests the benchmark corpus into Qdrant + Elasticsearch, then runs end-to-end
-uv run python -m benchmarks.runner --dataset hotpotqa --mode open_domain --n 500 --provider deepseek --concurrency 5
-```
-
-### With alternative LLM
-
-```bash
-uv run python -m benchmarks.runner --dataset hotpotqa --mode gold --n 500 --provider gemini --concurrency 10
+uv run python -m benchmarks.runner --dataset hotpotqa --mode open_domain --n 500 --concurrency 5
 ```
 
 ### Full argument reference
@@ -429,7 +432,7 @@ uv run python -m benchmarks.runner --dataset hotpotqa --mode gold --n 500 --prov
 --n             Number of examples (default: 500; paper uses 500)
 --seed          Random seed for subsampling (default: 42)
 --concurrency   Parallel queries (default: 1; use 10–25 for speed)
---provider      deepseek | gemini (overrides LLM_PROVIDER in .env)
+--provider      deepseek (overrides LLM_PROVIDER in .env)
 --convergence-threshold   Jaccard threshold for convergence detection (default: 0.85)
 --fast-path-threshold     Evaluator confidence for fast-path skip (default: disabled)
 --disable-parallel        Run post-write verification steps sequentially
@@ -452,17 +455,16 @@ docker compose up --build
 
 ---
 
-## Configuration Reference
+## 9. Configuration Reference
 
 All parameters are set via environment variables or the `.env` file (see `.env.example`). The `Settings` class in `backend/app/config.py` provides typed access with defaults.
 
 | Parameter                             | Default                                                     | Description                                                                                           |
 | ------------------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `LLM_PROVIDER`                        | `deepseek`                                                  | Active LLM provider: `deepseek` or `gemini`                                                           |
-| `DEEPSEEK_API_KEY`                    | —                                                           | DeepSeek API key (required if provider is deepseek)                                                   |
+| `LLM_PROVIDER`                        | `deepseek`                                                  | LLM provider (set to `deepseek`; no alternatives)                                                   |
+| `DEEPSEEK_API_KEY`                    | —                                                           | DeepSeek API key (required)                                                                        |
 | `DEEPSEEK_MODEL`                      | `deepseek-chat`                                             | DeepSeek model identifier                                                                             |
-| `GEMINI_API_KEY`                      | —                                                           | Gemini API key (required if provider is gemini)                                                       |
-| `GEMINI_MODEL`                        | `gemini-2.5-flash`                                          | Gemini model identifier                                                                               |
+| `DEEPSEEK_BASE_URL`                   | `https://api.deepseek.com`                                  | DeepSeek API base URL                                                                                 |
 | `DATABASE_URL`                        | `postgresql+asyncpg://ara:ara_secret@localhost:5432/ara_db` | PostgreSQL connection string                                                                          |
 | `QDRANT_HOST`                         | `localhost`                                                 | Qdrant server hostname                                                                                |
 | `QDRANT_PORT`                         | `6333`                                                      | Qdrant gRPC port                                                                                      |
@@ -480,32 +482,21 @@ All parameters are set via environment variables or the `.env` file (see `.env.e
 | `EVIDENCE_COVERAGE_THRESHOLD`         | `0.45`                                                      | Minimum evidence coverage to suppress additional retrieval hops                                       |
 | `MIN_RETRIEVAL_DIVERSITY`             | `0.25`                                                      | Minimum document diversity required in the retrieved set                                              |
 | `EVALUATOR_CONFIDENCE_THRESHOLD`      | `0.4`                                                       | Minimum evaluator confidence to influence routing decisions                                           |
-| `DEFAULT_REWRITE_COUNT`               | `4`                                                         | Default number of query variants generated per retrieval step                                         |
-| `REWARD_W1_FAITHFULNESS`              | `0.45`                                                      | Bandit reward weight for faithfulness                                                                 |
-| `REWARD_W2_CITATION_PRECISION`        | `0.30`                                                      | Bandit reward weight for citation precision                                                           |
-| `REWARD_W3_ANSWER_COMPLETENESS`       | `0.20`                                                      | Bandit reward weight for answer completeness                                                          |
-| `REWARD_W4_LATENCY_PENALTY`           | `0.15`                                                      | Bandit reward weight for latency penalty                                                              |
-| `LAMBDA_COST`                         | `0.3`                                                       | Cost penalty weight in the utility function                                                           |
-| `LAMBDA_LATENCY`                      | `0.2`                                                       | Latency penalty weight in the utility function                                                        |
-| `MAX_LATENCY_SECONDS`                 | `15.0`                                                      | Latency ceiling for the latency penalty normalization term                                            |
 | `DISABLE_PARALLEL`                    | `False`                                                     | Run claim extraction / citation verification / evaluation sequentially instead of concurrently        |
 
-### Bandit Retrieval Configurations
+### Retrieval Routing Configurations
 
-The Thompson Sampling bandit selects among four fixed retrieval configurations per query:
+The planner classifies each query into one of three complexity levels and maps it to a fixed retrieval configuration (top-k, reranking, and multi-hop limits):
 
-| Config | top_k | Rerank | Query Rewrite | Rewrites | Hop Limit | LLM Rewrite |
-| ------ | ----- | ------ | ------------- | -------- | --------- | ----------- |
-| A      | 5     | ✗      | ✗             | 1        | 1         | ✗           |
-| B      | 10    | ✗      | ✓             | 3        | 1         | ✗           |
-| C      | 10    | ✓      | ✓             | 4        | 2         | ✗           |
-| D      | 8     | ✗      | ✓             | 5        | 2         | ✓           |
-
-The bandit maintains Beta(α, β) posteriors over each configuration and updates them per query based on whether the composite reward exceeds 0.70. An ε=0.10 exploration rate prevents premature convergence.
+| Complexity  | top_k | Rerank | Multi-hop limit |
+| ----------- | ----- | ------ | --------------- |
+| `simple`    | 5     | ✗      | 1               |
+| `complex`   | 10    | ✓      | 1               |
+| `multi-hop` | 10    | ✓      | 3               |
 
 ---
 
-## Citation
+## 10. Citation
 
 If this implementation is useful for your research, please cite the original MetaRAG paper:
 

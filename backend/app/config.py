@@ -4,21 +4,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=(".env", "../.env"),
-        env_file_encoding="utf-8", 
+        env_file_encoding="utf-8",
         extra="ignore"
     )
 
-    # LLM provider: "deepseek" or "gemini"
+    # LLM provider
     llm_provider: str = "deepseek"
 
-    # DeepSeek (OpenAI-compatible)
+    # DeepSeek
     deepseek_api_key: str = ""
     deepseek_model: str = "deepseek-chat"
     deepseek_base_url: str = "https://api.deepseek.com"
-
-    # Gemini (kept for side-by-side comparison)
-    gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.5-flash"
 
     # PostgreSQL
     database_url: str = "postgresql+asyncpg://ara:ara_secret@localhost:5432/ara_db"

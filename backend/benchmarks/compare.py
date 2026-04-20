@@ -7,7 +7,7 @@ report with per-metric comparison and architecture contribution analysis.
 Usage:
     python -m benchmarks.compare \
         benchmarks/results/evaluations/hotpotqa_gold_deepseek_..._summary.json \
-        benchmarks/results/evaluations/hotpotqa_gold_gemini_..._summary.json \
+        benchmarks/results/evaluations/hotpotqa_gold_deepseek_..._summary.json \
         -o benchmarks/results/reports/comparison.md
 """
 
@@ -18,7 +18,7 @@ from pathlib import Path
 
 
 # Paper Table 1 Standard RAG baselines (no metacognitive architecture)
-STANDARD_RAG_BASELINES = {
+STANDARD_RAG_BASELINES: dict[str, dict[str, float]] = {
     "hotpotqa": {"EM": 24.6, "F1": 33.0, "Prec": 34.1, "Rec": 34.5},
     "2wikimultihopqa": {"EM": 18.8, "F1": 25.2, "Prec": 25.6, "Rec": 26.2},
 }
@@ -111,45 +111,28 @@ def generate_comparison(summary_a: dict, summary_b: dict) -> str:
         lines.append(f"| Configuration | EM | F1 | Prec | Rec |")
         lines.append(f"|--------------|---:|---:|---:|---:|")
 
-        # Row 1: Standard RAG baseline from paper (no metacognitive, Gemini-class)
+        # Row 1: Standard RAG baseline from paper (no metacognitive)
         lines.append(
             f"| Standard RAG (paper baseline) | {baseline['EM']:.1f} | {baseline['F1']:.1f} | {baseline['Prec']:.1f} | {baseline['Rec']:.1f} |"
         )
 
-        # Determine which summary is gemini/deepseek
-        gemini_m = ma if provider_a.lower() == "gemini" else mb if provider_b.lower() == "gemini" else None
-        deepseek_m = ma if provider_a.lower() == "deepseek" else mb if provider_b.lower() == "deepseek" else None
+    # Determine which provider is deepseek
+    deepseek_m = ma if provider_a.lower() == "deepseek" else mb if provider_b.lower() == "deepseek" else None
 
-        if gemini_m:
-            lines.append(
-                f"| Gemini + Meta-RAG (ours) | {_fmt(gemini_m['exact_match'])} | {_fmt(gemini_m['f1'])} | {_fmt(gemini_m['precision'])} | {_fmt(gemini_m['recall'])} |"
-            )
         if deepseek_m:
             lines.append(
-                f"| DeepSeek + Meta-RAG (ours) | {_fmt(deepseek_m['exact_match'])} | {_fmt(deepseek_m['f1'])} | {_fmt(deepseek_m['precision'])} | {_fmt(deepseek_m['recall'])} |"
+                f"| DeepSeek V3.2 + Meta-RAG (ours) | {_fmt(deepseek_m['exact_match'])} | {_fmt(deepseek_m['f1'])} | {_fmt(deepseek_m['precision'])} | {_fmt(deepseek_m['recall'])} |"
             )
 
         lines.append(f"")
 
-        # Delta rows
-        if gemini_m:
-            gem_em = gemini_m["exact_match"] * 100 if gemini_m["exact_match"] <= 1.0 else gemini_m["exact_match"]
-            gem_f1 = gemini_m["f1"] * 100 if gemini_m["f1"] <= 1.0 else gemini_m["f1"]
-            arch_em = gem_em - baseline["EM"]
-            arch_f1 = gem_f1 - baseline["F1"]
-            lines.append(f"**Architecture contribution** (Gemini + metacognitive vs Standard RAG): EM +{arch_em:.1f}, F1 +{arch_f1:.1f}")
-
-        if gemini_m and deepseek_m:
-            gem_em = gemini_m["exact_match"] * 100 if gemini_m["exact_match"] <= 1.0 else gemini_m["exact_match"]
+        # Delta row — architecture contribution vs paper Standard RAG baseline
+        if deepseek_m:
             ds_em = deepseek_m["exact_match"] * 100 if deepseek_m["exact_match"] <= 1.0 else deepseek_m["exact_match"]
-            gem_f1 = gemini_m["f1"] * 100 if gemini_m["f1"] <= 1.0 else gemini_m["f1"]
             ds_f1 = deepseek_m["f1"] * 100 if deepseek_m["f1"] <= 1.0 else deepseek_m["f1"]
-            model_em = ds_em - gem_em
-            model_f1 = ds_f1 - gem_f1
-            sign_em = "+" if model_em >= 0 else ""
-            sign_f1 = "+" if model_f1 >= 0 else ""
-            lines.append(f"")
-            lines.append(f"**Model contribution** (DeepSeek vs Gemini, same architecture): EM {sign_em}{model_em:.1f}, F1 {sign_f1}{model_f1:.1f}")
+            arch_em = ds_em - baseline["EM"]
+            arch_f1 = ds_f1 - baseline["F1"]
+            lines.append(f"**Architecture contribution** (DeepSeek + metacognitive vs Standard RAG): EM +{arch_em:.1f}, F1 +{arch_f1:.1f}")
 
     lines.append(f"")
     lines.append(f"---")

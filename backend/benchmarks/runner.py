@@ -366,7 +366,7 @@ async def run_benchmark(
         seed: Random seed for subsampling
         output_dir: Directory for results output
         concurrency: Number of parallel queries (1 = sequential)
-        provider: Override LLM provider ("deepseek" or "gemini"); None uses config default
+        provider: Override LLM provider ("deepseek"); None uses config default
         convergence_threshold: Override metacognitive convergence threshold
         fast_path_threshold: Evaluator confidence for fast-path skip (None = disabled)
         disable_parallel: Disable parallel post-write verification calls
@@ -543,7 +543,7 @@ async def run_benchmark(
     output_path = Path(output_dir) / "evaluations"
     output_path.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    provider_tag = settings.llm_provider.lower()
+        provider_tag = "deepseek"
     results_file = output_path / f"{dataset_name}_{mode}_{provider_tag}_{timestamp}.json"
     summary_file = output_path / f"{dataset_name}_{mode}_{provider_tag}_{timestamp}_summary.json"
 
@@ -637,7 +637,7 @@ def main():
     parser.add_argument("--seed", type=int, default=42, help="Random seed for subsampling")
     parser.add_argument("--output-dir", default="benchmarks/results", help="Output directory")
     parser.add_argument("--concurrency", type=int, default=1, help="Parallel queries (default 1, try 5-10 for speed)")
-    parser.add_argument("--provider", choices=["deepseek", "gemini"], default=None, help="Override LLM provider (default: use config)")
+    parser.add_argument("--provider", choices=["deepseek"], default=None, help="Override LLM provider (default: use config)")
     parser.add_argument("--convergence-threshold", type=float, default=None, help="Override metacognitive convergence threshold (default: 0.85)")
     parser.add_argument("--fast-path-threshold", type=float, default=None, help="Evaluator confidence threshold for fast-path skip (default: None = disabled)")
     parser.add_argument("--disable-parallel", action="store_true", help="Disable parallel post-write verification calls")

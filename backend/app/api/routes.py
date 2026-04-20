@@ -88,7 +88,6 @@ async def system_overview():
         "infrastructure": {
             "llm_provider": settings.llm_provider,
             "deepseek_model": settings.deepseek_model,
-            "gemini_model": settings.gemini_model,
             "embedding_model": settings.embedding_model,
             "reranker_model": settings.reranker_model,
             "qdrant_collection": settings.qdrant_collection,
