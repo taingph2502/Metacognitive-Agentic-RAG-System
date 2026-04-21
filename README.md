@@ -30,22 +30,20 @@ The performance differential is attributable to DeepSeek V3.2's substantially gr
 
 ## 2. Tech Stack
 
-| Technology                       | Version            | Responsibility                                                                      |
-| -------------------------------- | ------------------ | ----------------------------------------------------------------------------------- |
-| **Python**                       | ≥ 3.13             | Runtime                                                                             |
-| **LangGraph**                    | ≥ 0.2              | Agent graph orchestration; stateful multi-node DAG with conditional edges           |
-| **LangChain / langchain-core**   | ≥ 0.3              | LLM abstraction and message formatting                                              |
-| **FastAPI**                      | ≥ 0.115            | REST API server for document ingestion and query endpoints                          |
-| **Uvicorn**                      | ≥ 0.32             | ASGI server                                                                         |
-| **Qdrant**                       | ≥ 1.12             | Vector store for dense (embedding) retrieval                                        |
-| **Elasticsearch**                | 8.17               | Inverted-index BM25 sparse retrieval                                                |
-| **PostgreSQL 16**                | via asyncpg        | Document metadata and analytics storage                                             |
-| **sentence-transformers**        | ≥ 3.3              | Local embedding (`BAAI/bge-small-en-v1.5`) and reranking (`BAAI/bge-reranker-base`) |
-| **PyMuPDF**                      | ≥ 1.25             | PDF ingestion and text extraction                                                   |
-| **DeepSeek V3.2**                | `deepseek-chat`    | Primary and sole LLM (OpenAI-compatible API)                                              |
-| **Pydantic / pydantic-settings** | ≥ 2.10 / ≥ 2.7     | Configuration management and data validation                                        |
-| **uv**                           | —                  | Fast Python package and environment manager                                         |
-| **Docker Compose**               | —                  | Infrastructure orchestration (Qdrant, Elasticsearch, PostgreSQL, API)               |
+| Technology                | Version         | Responsibility                                                                      |
+| ------------------------- | --------------- | ----------------------------------------------------------------------------------- |
+| **Python**                | ≥ 3.13          | Runtime                                                                             |
+| **LangGraph**             | ≥ 0.2           | Agent graph orchestration; stateful multi-node DAG with conditional edges           |
+| **LangChain**             | ≥ 0.3           | LLM abstraction and message formatting                                              |
+| **FastAPI**               | ≥ 0.115         | REST API server for document ingestion and query endpoints                          |
+| **Qdrant**                | ≥ 1.12          | Vector store for dense (embedding) retrieval                                        |
+| **Elasticsearch**         | 8.17            | Inverted-index BM25 sparse retrieval                                                |
+| **PostgreSQL 16**         | via asyncpg     | Document metadata and analytics storage                                             |
+| **sentence-transformers** | ≥ 3.3           | Local embedding (`BAAI/bge-small-en-v1.5`) and reranking (`BAAI/bge-reranker-base`) |
+| **PyMuPDF**               | ≥ 1.25          | PDF ingestion and text extraction                                                   |
+| **DeepSeek V3.2**         | `deepseek-chat` | Primary and sole LLM (OpenAI-compatible API)                                        |
+| **Pydantic**              | ≥ 2.10          | Configuration management and data validation                                        |
+| **Docker Compose**        | —               | Infrastructure orchestration (Qdrant, Elasticsearch, PostgreSQL, API)               |
 
 ---
 
@@ -55,60 +53,7 @@ The system implements a LangGraph state machine with eleven processing nodes. In
 
 ### End-to-End Pipeline
 
-```
-                              ┌─────────────────┐
-                              │  QUERY (input)  │
-                              └────────┬────────┘
-                                       │
-                               ┌───────▼───────┐
-                               │     plan      │  classify query complexity
-                               │               │  (simple/complex/multi-hop)
-                               └───────┬───────┘
-                                       │
-                               ┌───────▼───────┐
-                               │   retrieve    │  hybrid RRF (dense + BM25)
-                               │               │  optional cross-encoder rerank
-                               └───────┬───────┘
-                                       │
-                               ┌───────▼───────┐
-                               │     read      │  evidence extraction
-                               │               │  from retrieved docs
-                               └───────┬───────┘
-                                       │
-                               ┌───────▼───────┐
-                               │     write     │  grounded answer generation
-                               │               │  with inline citations
-                               └───────┬───────┘
-                                       │
-                          ┌────────────▼────────────┐
-                          │  verify_and_evaluate    │  claim extraction,
-                          │  (parallel)           │  citation verification,
-                          │                        │  evidence graph,
-                          │                        │  LLM faithfulness eval
-                          └────────────┬────────────┘
-                                       │
-                               ┌───────▼───────┐
-                               │   diagnose    │  metacognitive monitoring
-                               │               │  + evaluating (§4.1–4.2)
-                               └───────┬───────┘
-                                       │
-              satisfactory? ───────────────┤
-              converged?                  │  needs remediation
-              max rounds hit?             │
-                    │          ┌───────▼───────┐
-                    │          │   remediate   │  category-specific planning
-                    │          │              │  (§4.3): targeted re-retrieval or
-                    │          └───────┬───────┘  writing directive
-                    │                  │
-                    │          ┌───────▼───────┐
-                    │          │    write     │  re-generation with directive
-                    │          └───────┬───────┘
-                    │                  │  (loop back to verify_and_evaluate)
-                    │
-              ┌─────▼─────┐
-              │    END    │
-              └───────────┘
-```
+![Pipeline](docs/assets/pipeline.png)
 
 ### Component Table
 
@@ -147,7 +92,7 @@ The system implements a LangGraph state machine with eleven processing nodes. In
 | `log_provenance_snapshot`           | `backend/app/memory/strategy_memory.py`         | Persists full answer provenance snapshots including diagnosis, citations, and evidence graph             |
 | Ingestion pipeline                  | `backend/app/ingestion/pipeline.py`             | PDF/DOCX/HTML/TXT chunking → Qdrant dense upsert + Elasticsearch BM25 index                              |
 | Settings                            | `backend/app/config.py`                         | Pydantic-settings configuration with `.env` override                                                     |
-| LLM abstraction                     | `backend/app/llm.py`                            | DeepSeek LLM abstraction via OpenAI-compatible API                                                |
+| LLM abstraction                     | `backend/app/llm.py`                            | DeepSeek LLM abstraction via OpenAI-compatible API                                                       |
 | Cost tracking                       | `backend/app/cost.py`                           | Token cost estimation and DeepSeek balance monitoring                                                    |
 | API routes                          | `backend/app/api/routes.py`                     | FastAPI routers: query, stream, document management, ingestion, and analytics endpoints                  |
 | Benchmark runner                    | `backend/benchmarks/runner.py`                  | Async parallel evaluation with gold-context and open-domain modes                                        |
@@ -461,8 +406,8 @@ All parameters are set via environment variables or the `.env` file (see `.env.e
 
 | Parameter                             | Default                                                     | Description                                                                                           |
 | ------------------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `LLM_PROVIDER`                        | `deepseek`                                                  | LLM provider (set to `deepseek`; no alternatives)                                                   |
-| `DEEPSEEK_API_KEY`                    | —                                                           | DeepSeek API key (required)                                                                        |
+| `LLM_PROVIDER`                        | `deepseek`                                                  | LLM provider (set to `deepseek`; no alternatives)                                                     |
+| `DEEPSEEK_API_KEY`                    | —                                                           | DeepSeek API key (required)                                                                           |
 | `DEEPSEEK_MODEL`                      | `deepseek-chat`                                             | DeepSeek model identifier                                                                             |
 | `DEEPSEEK_BASE_URL`                   | `https://api.deepseek.com`                                  | DeepSeek API base URL                                                                                 |
 | `DATABASE_URL`                        | `postgresql+asyncpg://ara:ara_secret@localhost:5432/ara_db` | PostgreSQL connection string                                                                          |
