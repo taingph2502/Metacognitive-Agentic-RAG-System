@@ -1,0 +1,59 @@
+
+============================================================
+Meta-Agent-RAG Benchmark: hotpotqa (gold mode, n=500)
+  LLM provider: deepseek
+  LLM model   : deepseek-v4-flash
+  Concurrency : 50
+============================================================
+
+  Account balance (before): 0.53 USD
+Loading hotpotqa dataset...
+Loaded 500 examples.
+
+  [100/500] EM=0.520 F1=0.671 Prec=0.721 Rec=0.667 ($0.0479, 0.9 q/s, ETA 428s)
+  [200/500] EM=0.525 F1=0.650 Prec=0.689 Rec=0.647 ($0.1024, 1.0 q/s, ETA 314s)
+  [300/500] EM=0.510 F1=0.640 Prec=0.677 Rec=0.639 ($0.1610, 0.9 q/s, ETA 217s)
+  [400/500] EM=0.507 F1=0.634 Prec=0.666 Rec=0.637 ($0.2118, 1.1 q/s, ETA 93s)
+  [500/500] EM=0.482 F1=0.615 Prec=0.653 Rec=0.617 ($0.2641, 1.2 q/s, ETA 0s)
+
+============================================================
+RESULTS: hotpotqa (gold mode)
+============================================================
+  Exact Match : 0.4820
+  F1          : 0.6147
+  Precision   : 0.6534
+  Recall      : 0.6165
+  Examples    : 500
+  Total time  : 406.9s
+  Latency p50 : 7268 ms
+  Latency p75 : 13300 ms
+  Latency p90 : 28048 ms
+  Latency p99 : 55193 ms
+  Convergence : 0.85
+  Monitor th. : 0.4
+============================================================
+
+  Account balance  : 0.39 USD
+  Session spend    : $0.1400
+
+Results saved to: benchmarks\results\evaluations\hotpotqa_gold_deepseek_20260509_111656.json
+Summary saved to: benchmarks\results\evaluations\hotpotqa_gold_deepseek_20260509_111656_summary.json
+Cost log saved to: benchmarks\results\cost_logs\cost_log.jsonl
+
+======================================================================
+COMPARISON WITH PAPER BASELINES — hotpotqa
+======================================================================
+Method                     EM       F1     Prec      Rec
+----------------------------------------------------------------------
+Standard RAG             24.6     33.0     34.1     34.5
+ReAct                    24.8     41.7     42.6     44.7
+Flare                    29.2     42.4     42.8     43.0
+IR-CoT                   31.4     40.3     41.6     41.2
+Self-Ask                 28.2     43.1     43.4     44.8
+Reflexion                30.0     43.4     43.2     44.3
+MetaRAG (paper)          37.8     49.9     52.1     50.9
+----------------------------------------------------------------------
+Ours (Meta-Agent-RAG)    48.2     61.5     65.3     61.7
+======================================================================
+
+Run log saved to: benchmarks\results\run_logs\hotpotqa_gold_500.txt

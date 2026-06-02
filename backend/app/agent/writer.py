@@ -3,51 +3,93 @@ from langchain_core.messages import HumanMessage
 from app.llm import ainvoke
 
 
-WRITE_PROMPT = """\
-You are a research writer. Write a comprehensive, grounded answer to the query using only the provided source documents.
+EXTERNAL_ONLY_INSTRUCTIONS = """\
+Answer using only the provided source documents.
+- Cite source documents inline using [1], [2], etc. whenever you use document information.
+- Do not add information not present in the documents.
+- If the documents are insufficient, say what is missing."""
 
-Query: {query}
+INTERNAL_ONLY_INSTRUCTIONS = """\
+The retrieved documents may be incomplete or misleading for this question.
+- Answer from your own knowledge.
+- Do not invent citations.
+- Cite a provided document only if it directly supports a claim."""
 
-Evidence:
-{evidence}
+REASONING_ERROR_INSTRUCTIONS = """\
+Answer from the provided documents, but repair the reasoning.
+- Connect the relevant evidence step by step.
+- Avoid repeating the same point.
+- Address exactly what the question asks.
+- Cite source documents inline using [1], [2], etc. when document evidence is used."""
+
+
+def _format_docs(docs: list[dict]) -> str:
+    if not docs:
+        return "(no source documents provided)"
+    return "\n\n".join(
+        f"[{i + 1}] **{d.get('source', 'unknown')}**\n{d.get('text', '')}"
+        for i, d in enumerate(docs)
+    )
+
+
+def _mode_instructions(answer_mode: str) -> str:
+    if answer_mode == "internal_only":
+        return INTERNAL_ONLY_INSTRUCTIONS
+    if answer_mode == "reasoning_error":
+        return REASONING_ERROR_INSTRUCTIONS
+    return EXTERNAL_ONLY_INSTRUCTIONS
+
+
+def build_writer_prompt(
+    query: str,
+    docs: list[dict],
+    writing_directive: str | None = None,
+    answer_mode: str = "external_only",
+) -> str:
+    directive_block = f"\nAdditional planning directive:\n{writing_directive}\n" if writing_directive else ""
+    return f"""\
+You are the cognition component of a metacognitive RAG system.
+
+Query:
+{query}
 
 Source documents:
-{context}
-{directive_block}
+{_format_docs(docs)[:5000]}
+
+Answer mode:
+{answer_mode}
+
 Instructions:
-- Write a clear, structured Markdown response
-- ALWAYS cite sources inline using [1], [2], etc. notation whenever you use information from a document.
-- Inline citations are MANDATORY for every factual claim.
-- Be concise but thorough
-- Do not add information not present in the documents
-- IMPORTANT: DO NOT include a "References" or "Sources" section at the end. I will handle the list separately.
+{_mode_instructions(answer_mode)}
+{directive_block}
+Write a concise, direct Markdown answer.
 
 Answer:"""
 
 
 async def write_answer(
     query: str,
-    evidence: list[str],
     docs: list[dict],
+    *,
     writing_directive: str | None = None,
+    answer_mode: str = "external_only",
+    metacognitive_round: int = 0,
 ) -> str:
-    """Generate a grounded Markdown answer with inline citations.
-
-    If a writing_directive is provided (from metacognitive remediation),
-    it is injected into the prompt to shape the answer strategy.
-    """
-    context = "\n\n".join(
-        [f"[{i + 1}] **{d['source']}**\n{d['text']}" for i, d in enumerate(docs)]
-    )
-    evidence_block = "\n".join([f"- {e}" for e in evidence]) if evidence else "(no evidence extracted)"
-    directive_block = f"\n{writing_directive}\n" if writing_directive else ""
-    prompt = WRITE_PROMPT.format(
+    # First draft: use the fast/cheap Flash model.
+    # Remediation rounds (round > 0): upgrade to the strong Pro model
+    # because the writer must follow complex corrective directives.
+    tier = "strong" if metacognitive_round > 0 else "flash"
+    prompt = build_writer_prompt(
         query=query,
-        evidence=evidence_block,
-        context=context[:5000],
-        directive_block=directive_block,
+        docs=docs,
+        writing_directive=writing_directive,
+        answer_mode=answer_mode,
     )
     response = await ainvoke(
-        [HumanMessage(content=prompt)], call_site="writer", temperature=0.3,
+        [HumanMessage(content=prompt)],
+        call_site="writer",
+        temperature=0.0,
+        tier=tier,
     )
     return response.content.strip()
+

@@ -107,7 +107,6 @@ def _format_2wikimultihopqa(raw: dict) -> dict[str, Any]:
 def load_hotpotqa(
     n: int = 500,
     seed: int = 42,
-    cache_dir: str | None = None,
 ) -> list[dict[str, Any]]:
     """
     Load HotpotQA validation examples.
@@ -128,7 +127,6 @@ def load_hotpotqa(
 def load_2wikimultihopqa(
     n: int = 500,
     seed: int = 42,
-    cache_dir: str | None = None,
 ) -> list[dict[str, Any]]:
     """
     Load 2WikiMultiHopQA validation examples.

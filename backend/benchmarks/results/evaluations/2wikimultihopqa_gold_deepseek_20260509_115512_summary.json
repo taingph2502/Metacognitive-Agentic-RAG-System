@@ -1,0 +1,46 @@
+{
+  "dataset": "2wikimultihopqa",
+  "mode": "gold",
+  "provider": "deepseek",
+  "n": 500,
+  "seed": 42,
+  "llm_model": "deepseek-v4-flash",
+  "metrics": {
+    "exact_match": 0.656,
+    "f1": 0.7192,
+    "precision": 0.7225,
+    "recall": 0.7364,
+    "num_examples": 500
+  },
+  "cost": {
+    "total_calls": 1505,
+    "total_tokens": 1296062,
+    "cache_hit_tokens": 23296,
+    "cache_miss_tokens": 1000284,
+    "completion_tokens": 272482,
+    "cost_cache_hit_usd": 6.5e-05,
+    "cost_cache_miss_usd": 0.14004,
+    "cost_completion_usd": 0.076295,
+    "total_cost_usd": 0.2164
+  },
+  "balance_before": {
+    "currency": "USD",
+    "total_balance": 0.27,
+    "topped_up_balance": 0.27
+  },
+  "balance_after": {
+    "currency": "USD",
+    "total_balance": 0.24,
+    "topped_up_balance": 0.24
+  },
+  "total_time_seconds": 218.15,
+  "timestamp": "20260509_115512",
+  "convergence_threshold": 0.85,
+  "monitor_similarity_threshold": 0.4,
+  "latency_percentiles": {
+    "p50": 6008.9,
+    "p75": 8950.1,
+    "p90": 13876.9,
+    "p99": 29651.4
+  }
+}

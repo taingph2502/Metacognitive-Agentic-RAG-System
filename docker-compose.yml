@@ -25,50 +25,6 @@ services:
       retries: 10
     restart: unless-stopped
 
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-ara}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ara_secret}
-      POSTGRES_DB: ${POSTGRES_DB:-ara_db}
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ara}"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
-  api:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    ports:
-      - "8000:8000"
-    environment:
-      QDRANT_HOST: qdrant
-      QDRANT_PORT: 6333
-      ELASTICSEARCH_URL: http://elasticsearch:9200
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-ara}:${POSTGRES_PASSWORD:-ara_secret}@postgres:5432/${POSTGRES_DB:-ara_db}
-      LLM_PROVIDER: ${LLM_PROVIDER:-deepseek}
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
-      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
-    depends_on:
-      postgres:
-        condition: service_healthy
-      qdrant:
-        condition: service_started
-      elasticsearch:
-        condition: service_healthy
-    volumes:
-      - ./backend/data:/app/data
-    restart: unless-stopped
-
-
 volumes:
   qdrant_data:
-  postgres_data:
   es_data:

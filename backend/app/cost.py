@@ -1,11 +1,17 @@
 """
-Per-call cost logging for DeepSeek V3.2 API usage.
+Per-call cost logging for DeepSeek API usage (Flash and Pro tiers).
 
 Tracks token usage and calculates cost per call using DeepSeek pricing:
 
-  - Cache hit:  $0.028  / 1M tokens
-  - Cache miss: $0.28   / 1M tokens
-  - Completion: $0.42   / 1M tokens
+  Flash (deepseek-v4-flash):
+    - Cache hit:  $0.0028 / 1M tokens
+    - Cache miss: $0.14   / 1M tokens
+    - Completion: $0.28   / 1M tokens
+
+  Pro (deepseek-v4-pro):
+    - Cache hit:  $0.003625 / 1M tokens (75% off - $0.0145)
+    - Cache miss: $0.435    / 1M tokens (75% off - $1.74)
+    - Completion: $0.87     / 1M tokens (75% - $3.48
 
 Cost data is accumulated in-memory per session and can be flushed to
 a JSONL file for benchmark cost reporting.
@@ -20,10 +26,31 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# DeepSeek V3 pricing (USD per 1M tokens)
-PRICE_CACHE_HIT = 0.028
-PRICE_CACHE_MISS = 0.28
-PRICE_COMPLETION = 0.42
+# DeepSeek pricing (USD per 1M tokens) keyed by provider tag.
+# The provider tag is set by llm.py as "deepseek-flash" or "deepseek-strong".
+PRICING: dict[str, dict[str, float]] = {
+    "deepseek-flash": {
+        "cache_hit": 0.0028,
+        "cache_miss": 0.14,
+        "completion": 0.28,
+    },
+    "deepseek-strong": {
+        "cache_hit": 0.003625,
+        "cache_miss": 0.435,
+        "completion": 0.87,
+    },
+}
+
+# Legacy flat constants kept for backward-compat (estimate_cost, summary).
+PRICE_CACHE_HIT = PRICING["deepseek-flash"]["cache_hit"]
+PRICE_CACHE_MISS = PRICING["deepseek-flash"]["cache_miss"]
+PRICE_COMPLETION = PRICING["deepseek-flash"]["completion"]
+
+
+def _get_pricing(provider: str) -> dict[str, float]:
+    """Return the pricing dict for the given provider, defaulting to flash."""
+    return PRICING.get(provider, PRICING["deepseek-flash"])
+
 
 
 @dataclass
@@ -54,17 +81,19 @@ def compute_call_cost(
     cache_hit_tokens: int,
     cache_miss_tokens: int,
     completion_tokens: int,
+    provider: str = "deepseek-flash",
 ) -> float:
     """Calculate USD cost for a single DeepSeek API call."""
+    p = _get_pricing(provider)
     return (
-        cache_hit_tokens * PRICE_CACHE_HIT
-        + cache_miss_tokens * PRICE_CACHE_MISS
-        + completion_tokens * PRICE_COMPLETION
+        cache_hit_tokens * p["cache_hit"]
+        + cache_miss_tokens * p["cache_miss"]
+        + completion_tokens * p["completion"]
     ) / 1_000_000
 
 
 # Rough blended prompt price: average of cache-hit and cache-miss rates
-_DEEPSEEK_BLENDED_PROMPT_RATE = (PRICE_CACHE_HIT + PRICE_CACHE_MISS) / 2  # ≈ $0.154 / 1M tokens
+_DEEPSEEK_BLENDED_PROMPT_RATE = (PRICE_CACHE_HIT + PRICE_CACHE_MISS) / 2
 
 
 def estimate_cost(input_chars: int, output_chars: int) -> float:
@@ -95,7 +124,7 @@ class CostTracker:
         completion_tokens: int = 0,
         provider: str = "",
     ) -> CallCostEntry:
-        cost = compute_call_cost(cache_hit_tokens, cache_miss_tokens, completion_tokens)
+        cost = compute_call_cost(cache_hit_tokens, cache_miss_tokens, completion_tokens, provider=provider)
         entry = CallCostEntry(
             timestamp=datetime.now(timezone.utc).isoformat(),
             call_site=call_site,
@@ -108,11 +137,6 @@ class CostTracker:
         with self._lock:
             self._entries.append(entry)
         return entry
-
-    @property
-    def entries(self) -> list[CallCostEntry]:
-        with self._lock:
-            return list(self._entries)
 
     def summary(self) -> dict:
         """Aggregate cost summary for the current session."""

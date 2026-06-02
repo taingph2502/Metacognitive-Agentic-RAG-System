@@ -1,7 +1,7 @@
 """
 Benchmark evaluation runner — Paper §5.
 
-Runs the Meta-RAG agent pipeline against HotpotQA and 2WikiMultiHopQA,
+Runs the Meta-Agent-RAG agent pipeline against HotpotQA and 2WikiMultiHopQA,
 computing EM, F1, Precision, and Recall as specified in the paper.
 
 Two evaluation modes:
@@ -16,7 +16,7 @@ Usage:
 
 import argparse
 import asyncio
-import json
+import contextlib
 import sys
 import time
 from datetime import datetime
@@ -31,6 +31,44 @@ from benchmarks.datasets import (
     save_results,
 )
 from benchmarks.metrics import aggregate_metrics, compute_metrics
+
+
+class _Tee:
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, data: str) -> int:
+        for stream in self.streams:
+            stream.write(data)
+        return len(data)
+
+    def flush(self) -> None:
+        for stream in self.streams:
+            stream.flush()
+
+
+def _build_run_log_path(output_dir: str | Path, dataset_name: str, mode: str, n: int) -> Path:
+    return Path(output_dir) / "run_logs" / f"{dataset_name}_{mode}_{n}.txt"
+
+
+@contextlib.contextmanager
+def _capture_run_log(enabled: bool, output_dir: str | Path, dataset_name: str, mode: str, n: int):
+    if not enabled:
+        yield None
+        return
+
+    log_path = _build_run_log_path(output_dir, dataset_name, mode, n)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    with log_path.open("w", encoding="utf-8") as log_file:
+        sys.stdout = _Tee(original_stdout, log_file)
+        sys.stderr = _Tee(original_stderr, log_file)
+        try:
+            yield log_path
+        finally:
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
 
 
 def _ingest_benchmark_corpus(examples: list[dict]) -> int:
@@ -108,27 +146,25 @@ def _compute_latency_percentiles(results: list[dict]) -> dict[str, float]:
 
 async def evaluate_single_gold(
     example: dict,
-    agent_fn,
 ) -> dict:
     """
     Evaluate a single example using gold context (provided documents).
 
-    Runs the simplified pipeline: plan → write → evaluate → diagnose → [remediate → write]*
+    Runs the simplified pipeline: write → monitor → diagnose → [remediate → write]*
     bypassing retrieval to isolate reasoning quality while preserving the metacognitive loop.
     """
     import time as _time
 
     from app.agent.metacognitive import (
         SATISFACTORY,
-        Diagnosis,
+        answer_mode_for_diagnosis,
         build_writing_directive,
         check_convergence,
         diagnose_answer,
+        monitor_answer,
     )
-    from app.agent.planner import plan_query
     from app.agent.writer import write_answer
     from app.config import settings
-    from app.optimization.evaluator import evaluate_answer
 
     query_start = _time.monotonic()
 
@@ -147,34 +183,21 @@ async def evaluate_single_gold(
         for i, doc in enumerate(context_docs)
     ]
 
-    plan = await plan_query(question)
-    query_type = plan["query_type"]
-
-    # Collect evidence from gold docs
-    evidence = [doc["text"][:500] for doc in context_docs if doc["text"].strip()]
-
     # Generate initial answer
-    answer = await write_answer(question, evidence, docs_for_agent)
+    answer = await write_answer(question, docs_for_agent)
 
     # Metacognitive loop: evaluate → diagnose → remediate → write
     metacognitive_round = 0
     previous_answer = ""
-    context_str = "\n\n".join(d["text"] for d in docs_for_agent[:10])
 
     for _ in range(settings.max_metacognitive_rounds):
-        eval_result = await evaluate_answer(question, answer, context_str)
-        faithfulness = eval_result["faithfulness"]
-        completeness = eval_result["answer_completeness"]
-        confidence = eval_result.get("confidence", 0.0)
-
+        monitor = await monitor_answer(question, answer, docs_for_agent)
         diag = await diagnose_answer(
             query=question,
             answer=answer,
             docs=docs_for_agent,
-            faithfulness=faithfulness,
-            completeness=completeness,
-            citation_precision=0.5,  # no citation verify in gold mode
-            evaluator_confidence=confidence,
+            monitor_score=monitor.score,
+            reference_answer=monitor.reference_answer,
         )
 
         if diag.category == SATISFACTORY:
@@ -185,8 +208,14 @@ async def evaluate_single_gold(
 
         # Remediate: apply writing directive and re-generate
         directive = build_writing_directive(diag)
+        answer_mode = answer_mode_for_diagnosis(diag)
         previous_answer = answer
-        answer = await write_answer(question, evidence, docs_for_agent, writing_directive=directive)
+        answer = await write_answer(
+            question,
+            docs_for_agent,
+            writing_directive=directive,
+            answer_mode=answer_mode,
+        )
         metacognitive_round += 1
 
     latency_ms = (_time.monotonic() - query_start) * 1000
@@ -200,7 +229,7 @@ async def evaluate_single_gold(
     metrics["reference"] = reference
     metrics["prediction"] = short_answer
     metrics["full_answer"] = answer
-    metrics["query_type"] = query_type
+    metrics["query_type"] = "paper_like"
     metrics["example_id"] = example.get("id", "")
     metrics["metacognitive_rounds"] = metacognitive_round
     metrics["latency_ms"] = round(latency_ms, 1)
@@ -210,34 +239,28 @@ async def evaluate_single_gold(
 
 async def evaluate_single_open_domain(
     example: dict,
-    agent_fn,
 ) -> dict:
     """
     Evaluate a single example using open-domain retrieval.
 
-    Runs the full agent pipeline (plan → rewrite → retrieve → read → ... → diagnose)
+    Runs the full simplified agent pipeline (retrieve → write → diagnose)
     without any gold context — the system must find its own supporting documents.
     """
     import time as _time
 
     from app.agent.graph import build_initial_state, get_graph
-    from app.optimization.bandit import CONFIG_NAMES
 
     query_start = _time.monotonic()
 
     question = example["question"]
     reference = example["answer"]
 
-    # Default uniform bandit priors (no pre-trained state for benchmarks)
-    alpha = {c: 1.0 for c in CONFIG_NAMES}
-    beta = {c: 1.0 for c in CONFIG_NAMES}
-
     graph = get_graph()
-    initial_state = build_initial_state(question, alpha, beta, document_ids=None)
+    initial_state = build_initial_state(question, document_ids=None)
     final_state = await graph.ainvoke(initial_state)
 
     answer = final_state.get("answer", "")
-    query_type = final_state.get("query_type", "unknown")
+    query_type = "paper_like"
     metacognitive_round = final_state.get("metacognitive_round", 0)
 
     latency_ms = (_time.monotonic() - query_start) * 1000
@@ -256,7 +279,6 @@ async def evaluate_single_open_domain(
     metrics["metacognitive_rounds"] = metacognitive_round
     metrics["latency_ms"] = round(latency_ms, 1)
     metrics["num_docs_retrieved"] = len(final_state.get("all_docs", []))
-    metrics["abstained"] = final_state.get("abstained", False)
 
     return metrics
 
@@ -324,9 +346,9 @@ async def _eval_one(index: int, example: dict, mode: str, semaphore: asyncio.Sem
     async with semaphore:
         try:
             if mode == "gold":
-                result = await evaluate_single_gold(example, None)
+                result = await evaluate_single_gold(example)
             elif mode == "open_domain":
-                result = await evaluate_single_open_domain(example, None)
+                result = await evaluate_single_open_domain(example)
             else:
                 raise ValueError(f"Unknown evaluation mode: {mode}")
             return index, result
@@ -351,10 +373,7 @@ async def run_benchmark(
     seed: int = 42,
     output_dir: str = "benchmarks/results",
     concurrency: int = 1,
-    provider: str | None = None,
     convergence_threshold: float | None = None,
-    fast_path_threshold: float | None = None,
-    disable_parallel: bool = False,
 ) -> dict:
     """
     Run full benchmark evaluation.
@@ -366,47 +385,33 @@ async def run_benchmark(
         seed: Random seed for subsampling
         output_dir: Directory for results output
         concurrency: Number of parallel queries (1 = sequential)
-        provider: Override LLM provider ("deepseek"); None uses config default
         convergence_threshold: Override metacognitive convergence threshold
-        fast_path_threshold: Evaluator confidence for fast-path skip (None = disabled)
-        disable_parallel: Disable parallel post-write verification calls
     """
     from app.config import settings
     from app.cost import cost_tracker, fetch_deepseek_balance
-
-    # Override provider if requested
-    if provider:
-        from app.llm import clear_cache
-        settings.llm_provider = provider
-        clear_cache()  # ensure new provider instances are created
 
     # Override convergence threshold if requested
     if convergence_threshold is not None:
         settings.metacognitive_convergence_threshold = convergence_threshold
 
-    # Store fast-path and parallel settings
-    if fast_path_threshold is not None:
-        settings.fast_path_threshold = fast_path_threshold
-    settings.disable_parallel = disable_parallel
-
     print(f"\n{'='*60}")
-    print(f"Meta-RAG Benchmark: {dataset_name} ({mode} mode, n={n})")
-    print(f"  LLM provider: {settings.llm_provider}")
+    print(f"Meta-Agent-RAG Benchmark: {dataset_name} ({mode} mode, n={n})")
+    print("  LLM provider: deepseek")
+    print(f"  LLM model   : {settings.deepseek_model} & {settings.deepseek_model_strong}")
     print(f"  Concurrency : {concurrency}")
     print(f"{'='*60}\n")
 
     # Reset cost tracker for this benchmark run
     cost_tracker.reset()
 
-    # Fetch balance before (DeepSeek only, non-blocking)
+    # Fetch balance before (non-blocking)
     balance_before = None
-    if settings.llm_provider.lower() == "deepseek":
-        try:
-            balance_before = await fetch_deepseek_balance(settings.deepseek_api_key)
-            if balance_before:
-                print(f"  Account balance (before): {balance_before['topped_up_balance']:.2f} {balance_before['currency']}")
-        except Exception:
-            pass
+    try:
+        balance_before = await fetch_deepseek_balance(settings.deepseek_api_key)
+        if balance_before:
+            print(f"  Account balance (before): {balance_before['topped_up_balance']:.2f} {balance_before['currency']}")
+    except Exception:
+        pass
 
     # Load dataset
     print(f"Loading {dataset_name} dataset...")
@@ -512,22 +517,18 @@ async def run_benchmark(
         print(f"  Latency p90 : {pcts['p90']:.0f} ms")
         print(f"  Latency p99 : {pcts['p99']:.0f} ms")
 
-    # Optimization settings
     print(f"  Convergence : {settings.metacognitive_convergence_threshold}")
-    if settings.fast_path_threshold is not None:
-        print(f"  Fast-path   : {settings.fast_path_threshold}")
-    print(f"  Parallel    : {'OFF' if settings.disable_parallel else 'ON'}")
+    print(f"  Monitor th. : {settings.monitor_similarity_threshold}")
     print(f"{'='*60}\n")
 
-    # Cost summary and balance (DeepSeek only)
+    # Cost summary and balance
     cost_tracker.print_summary()
 
     balance_after = None
-    if settings.llm_provider.lower() == "deepseek":
-        try:
-            balance_after = await fetch_deepseek_balance(settings.deepseek_api_key)
-        except Exception:
-            pass
+    try:
+        balance_after = await fetch_deepseek_balance(settings.deepseek_api_key)
+    except Exception:
+        pass
 
     if balance_before and balance_after:
         session_spend = balance_before["topped_up_balance"] - balance_after["topped_up_balance"]
@@ -543,7 +544,7 @@ async def run_benchmark(
     output_path = Path(output_dir) / "evaluations"
     output_path.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        provider_tag = "deepseek"
+    provider_tag = "deepseek"
     results_file = output_path / f"{dataset_name}_{mode}_{provider_tag}_{timestamp}.json"
     summary_file = output_path / f"{dataset_name}_{mode}_{provider_tag}_{timestamp}_summary.json"
 
@@ -556,7 +557,8 @@ async def run_benchmark(
             "provider": provider_tag,
             "n": n,
             "seed": seed,
-            "llm_provider": settings.llm_provider,
+            "llm_model": settings.deepseek_model,
+            "llm_model_strong": settings.deepseek_model_strong,
             "metrics": final_metrics,
             "cost": cost_summary,
             "balance_before": balance_before,
@@ -564,8 +566,7 @@ async def run_benchmark(
             "total_time_seconds": round(total_time, 2),
             "timestamp": timestamp,
             "convergence_threshold": settings.metacognitive_convergence_threshold,
-            "fast_path_threshold": settings.fast_path_threshold,
-            "disable_parallel": settings.disable_parallel,
+            "monitor_similarity_threshold": settings.monitor_similarity_threshold,
             "latency_percentiles": _compute_latency_percentiles(all_results),
         },
         summary_file,
@@ -586,7 +587,7 @@ PAPER_BASELINES = {
         "IR-CoT":        {"EM": 31.4, "F1": 40.3, "Prec": 41.6, "Rec": 41.2},
         "Self-Ask":      {"EM": 28.2, "F1": 43.1, "Prec": 43.4, "Rec": 44.8},
         "Reflexion":     {"EM": 30.0, "F1": 43.4, "Prec": 43.2, "Rec": 44.3},
-        "MetaRAG":       {"EM": 37.8, "F1": 49.9, "Prec": 52.1, "Rec": 50.9},
+        "MetaRAG (paper)": {"EM": 37.8, "F1": 49.9, "Prec": 52.1, "Rec": 50.9},
     },
     "2wikimultihopqa": {
         "Standard RAG":  {"EM": 18.8, "F1": 25.2, "Prec": 25.6, "Rec": 26.2},
@@ -595,7 +596,7 @@ PAPER_BASELINES = {
         "IR-CoT":        {"EM": 30.8, "F1": 42.6, "Prec": 42.3, "Rec": 40.9},
         "Self-Ask":      {"EM": 28.6, "F1": 37.5, "Prec": 36.5, "Rec": 42.8},
         "Reflexion":     {"EM": 31.8, "F1": 41.7, "Prec": 40.6, "Rec": 44.2},
-        "MetaRAG":       {"EM": 42.8, "F1": 50.8, "Prec": 50.7, "Rec": 52.2},
+        "MetaRAG (paper)": {"EM": 42.8, "F1": 50.8, "Prec": 50.7, "Rec": 52.2},
     },
 }
 
@@ -615,7 +616,7 @@ def print_comparison(dataset_name: str, our_metrics: dict) -> None:
         print(f"{method:<20} {scores['EM']:>8.1f} {scores['F1']:>8.1f} {scores['Prec']:>8.1f} {scores['Rec']:>8.1f}")
     print("-" * 70)
     print(
-        f"{'Ours (Meta-RAG)':<20} "
+        f"{'Ours (Meta-Agent-RAG)':<20} "
         f"{our_metrics['exact_match']*100:>8.1f} "
         f"{our_metrics['f1']*100:>8.1f} "
         f"{our_metrics['precision']*100:>8.1f} "
@@ -624,8 +625,8 @@ def print_comparison(dataset_name: str, our_metrics: dict) -> None:
     print(f"{'='*70}\n")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Meta-RAG Benchmark Runner")
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Meta-Agent-RAG Benchmark Runner")
     parser.add_argument(
         "--dataset",
         choices=["hotpotqa", "2wikimultihopqa", "both"],
@@ -637,10 +638,13 @@ def main():
     parser.add_argument("--seed", type=int, default=42, help="Random seed for subsampling")
     parser.add_argument("--output-dir", default="benchmarks/results", help="Output directory")
     parser.add_argument("--concurrency", type=int, default=1, help="Parallel queries (default 1, try 5-10 for speed)")
-    parser.add_argument("--provider", choices=["deepseek"], default=None, help="Override LLM provider (default: use config)")
     parser.add_argument("--convergence-threshold", type=float, default=None, help="Override metacognitive convergence threshold (default: 0.85)")
-    parser.add_argument("--fast-path-threshold", type=float, default=None, help="Evaluator confidence threshold for fast-path skip (default: None = disabled)")
-    parser.add_argument("--disable-parallel", action="store_true", help="Disable parallel post-write verification calls")
+    parser.add_argument("--save-run-log", action="store_true", help="Save terminal output to benchmarks/results/run_logs/<dataset>_<mode>_<n>.txt")
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
 
     datasets = (
@@ -649,15 +653,15 @@ def main():
     )
 
     for ds in datasets:
-        metrics = asyncio.run(
-            run_benchmark(ds, n=args.n, mode=args.mode, seed=args.seed,
-                          output_dir=args.output_dir, concurrency=args.concurrency,
-                          provider=args.provider,
-                          convergence_threshold=args.convergence_threshold,
-                          fast_path_threshold=args.fast_path_threshold,
-                          disable_parallel=args.disable_parallel)
-        )
-        print_comparison(ds, metrics)
+        with _capture_run_log(args.save_run_log, args.output_dir, ds, args.mode, args.n) as log_path:
+            metrics = asyncio.run(
+                run_benchmark(ds, n=args.n, mode=args.mode, seed=args.seed,
+                              output_dir=args.output_dir, concurrency=args.concurrency,
+                              convergence_threshold=args.convergence_threshold)
+            )
+            print_comparison(ds, metrics)
+            if log_path:
+                print(f"Run log saved to: {log_path}")
 
 
 if __name__ == "__main__":

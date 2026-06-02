@@ -1,8 +1,5 @@
 """
 ElasticSearch-backed lexical (BM25) retrieval.
-
-Replaces the previous in-memory rank_bm25 implementation with ElasticSearch,
-which handles BM25 scoring, incremental indexing, and document filtering natively.
 """
 
 from elasticsearch import Elasticsearch
@@ -104,28 +101,6 @@ def bm25_search(
         }
         for hit in response["hits"]["hits"]
     ]
-
-
-def delete_es_by_document_id(document_id: int) -> None:
-    """Delete all ES documents with a given document_id."""
-    ensure_es_index()
-    client = get_es_client()
-    client.delete_by_query(
-        index=settings.elasticsearch_index,
-        query={"term": {"document_id": document_id}},
-        refresh=True,
-    )
-
-
-def delete_es_by_source(source: str) -> None:
-    """Delete all ES documents with a given source."""
-    ensure_es_index()
-    client = get_es_client()
-    client.delete_by_query(
-        index=settings.elasticsearch_index,
-        query={"term": {"source": source}},
-        refresh=True,
-    )
 
 
 def wipe_es_index() -> None:

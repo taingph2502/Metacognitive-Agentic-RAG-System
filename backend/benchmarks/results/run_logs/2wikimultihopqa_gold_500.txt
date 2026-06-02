@@ -1,0 +1,59 @@
+
+============================================================
+Meta-Agent-RAG Benchmark: 2wikimultihopqa (gold mode, n=500)
+  LLM provider: deepseek
+  LLM model   : deepseek-v4-flash
+  Concurrency : 50
+============================================================
+
+  Account balance (before): 0.27 USD
+Loading 2wikimultihopqa dataset...
+Loaded 500 examples.
+
+  [100/500] EM=0.600 F1=0.658 Prec=0.672 Rec=0.668 ($0.0434, 1.6 q/s, ETA 257s)
+  [200/500] EM=0.635 F1=0.685 Prec=0.693 Rec=0.693 ($0.0893, 1.8 q/s, ETA 166s)
+  [300/500] EM=0.657 F1=0.714 Prec=0.717 Rec=0.729 ($0.1307, 2.1 q/s, ETA 96s)
+  [400/500] EM=0.655 F1=0.713 Prec=0.715 Rec=0.731 ($0.1730, 2.3 q/s, ETA 44s)
+  [500/500] EM=0.656 F1=0.719 Prec=0.723 Rec=0.736 ($0.2164, 2.3 q/s, ETA 0s)
+
+============================================================
+RESULTS: 2wikimultihopqa (gold mode)
+============================================================
+  Exact Match : 0.6560
+  F1          : 0.7192
+  Precision   : 0.7225
+  Recall      : 0.7364
+  Examples    : 500
+  Total time  : 218.1s
+  Latency p50 : 6009 ms
+  Latency p75 : 8950 ms
+  Latency p90 : 13877 ms
+  Latency p99 : 29651 ms
+  Convergence : 0.85
+  Monitor th. : 0.4
+============================================================
+
+  Account balance  : 0.24 USD
+  Session spend    : $0.0300
+
+Results saved to: benchmarks\results\evaluations\2wikimultihopqa_gold_deepseek_20260509_115512.json
+Summary saved to: benchmarks\results\evaluations\2wikimultihopqa_gold_deepseek_20260509_115512_summary.json
+Cost log saved to: benchmarks\results\cost_logs\cost_log.jsonl
+
+======================================================================
+COMPARISON WITH PAPER BASELINES — 2wikimultihopqa
+======================================================================
+Method                     EM       F1     Prec      Rec
+----------------------------------------------------------------------
+Standard RAG             18.8     25.2     25.6     26.2
+ReAct                    21.0     28.0     27.6     30.0
+Flare                    28.2     39.8     40.0     40.8
+IR-CoT                   30.8     42.6     42.3     40.9
+Self-Ask                 28.6     37.5     36.5     42.8
+Reflexion                31.8     41.7     40.6     44.2
+MetaRAG (paper)          42.8     50.8     50.7     52.2
+----------------------------------------------------------------------
+Ours (Meta-Agent-RAG)     65.6     71.9     72.2     73.6
+======================================================================
+
+Run log saved to: benchmarks\results\run_logs\2wikimultihopqa_gold_500.txt

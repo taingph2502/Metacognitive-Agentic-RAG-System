@@ -1,15 +1,50 @@
+import contextlib
 import hashlib
+import io
+import logging
+import os
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 from sentence_transformers import SentenceTransformer
+from huggingface_hub import login as _hf_login
 
 from app.config import settings
 
 _client: QdrantClient | None = None
 _embedder: SentenceTransformer | None = None
+_hf_runtime_configured = False
 
 EMBEDDING_DIM = 384  # bge-small-en-v1.5
+
+
+@contextlib.contextmanager
+def _quiet_huggingface_output():
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
+        yield
+
+
+def _configure_huggingface_runtime() -> None:
+    """Keep Hugging Face downloads quiet and authenticated when HF_TOKEN exists."""
+    global _hf_runtime_configured
+    if _hf_runtime_configured:
+        return
+
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+    os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+    logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
+    logging.getLogger("transformers").setLevel(logging.ERROR)
+    logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+
+    token = os.getenv("HF_TOKEN", "").strip()
+    if token:
+        with _quiet_huggingface_output():
+            _hf_login(token=token, add_to_git_credential=False)
+
+    _hf_runtime_configured = True
 
 
 def get_qdrant_client() -> QdrantClient:
@@ -22,7 +57,9 @@ def get_qdrant_client() -> QdrantClient:
 def get_embedder() -> SentenceTransformer:
     global _embedder
     if _embedder is None:
-        _embedder = SentenceTransformer(settings.embedding_model)
+        _configure_huggingface_runtime()
+        with _quiet_huggingface_output():
+            _embedder = SentenceTransformer(settings.embedding_model)
     return _embedder
 
 
@@ -109,38 +146,6 @@ def dense_search(query: str, top_k: int = 5, document_ids: list[int] | None = No
         }
         for r in response.points
     ]
-
-
-def delete_by_document_id(document_id: int) -> None:
-    """Delete all points associated with a specific document ID."""
-    ensure_collection()
-    client = get_qdrant_client()
-    from qdrant_client.models import FieldCondition, Filter, MatchValue
-
-    client.delete(
-        collection_name=settings.qdrant_collection,
-        points_selector=Filter(
-            must=[
-                FieldCondition(key="document_id", match=MatchValue(value=document_id)),
-            ]
-        ),
-    )
-
-
-def delete_by_source(source: str) -> None:
-    """Delete all points associated with a specific source string (legacy/backup)."""
-    ensure_collection()
-    client = get_qdrant_client()
-    from qdrant_client.models import FieldCondition, Filter, MatchValue
-
-    client.delete(
-        collection_name=settings.qdrant_collection,
-        points_selector=Filter(
-            must=[
-                FieldCondition(key="source", match=MatchValue(value=source)),
-            ]
-        ),
-    )
 
 
 def wipe_all_embeddings() -> None:

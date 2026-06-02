@@ -1,0 +1,46 @@
+{
+  "dataset": "hotpotqa",
+  "mode": "gold",
+  "provider": "deepseek",
+  "n": 500,
+  "seed": 42,
+  "llm_model": "deepseek-v4-flash",
+  "metrics": {
+    "exact_match": 0.482,
+    "f1": 0.6147,
+    "precision": 0.6534,
+    "recall": 0.6165,
+    "num_examples": 500
+  },
+  "cost": {
+    "total_calls": 1488,
+    "total_tokens": 1550513,
+    "cache_hit_tokens": 22016,
+    "cache_miss_tokens": 1171011,
+    "completion_tokens": 357486,
+    "cost_cache_hit_usd": 6.2e-05,
+    "cost_cache_miss_usd": 0.163942,
+    "cost_completion_usd": 0.100096,
+    "total_cost_usd": 0.264099
+  },
+  "balance_before": {
+    "currency": "USD",
+    "total_balance": 0.53,
+    "topped_up_balance": 0.53
+  },
+  "balance_after": {
+    "currency": "USD",
+    "total_balance": 0.39,
+    "topped_up_balance": 0.39
+  },
+  "total_time_seconds": 406.91,
+  "timestamp": "20260509_111656",
+  "convergence_threshold": 0.85,
+  "monitor_similarity_threshold": 0.4,
+  "latency_percentiles": {
+    "p50": 7267.6,
+    "p75": 13299.6,
+    "p90": 28048.5,
+    "p99": 55193.2
+  }
+}

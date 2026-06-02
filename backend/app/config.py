@@ -8,16 +8,11 @@ class Settings(BaseSettings):
         extra="ignore"
     )
 
-    # LLM provider
-    llm_provider: str = "deepseek"
-
     # DeepSeek
     deepseek_api_key: str = ""
-    deepseek_model: str = "deepseek-chat"
+    deepseek_model: str = "deepseek-v4-flash"
+    deepseek_model_strong: str = "deepseek-v4-pro"
     deepseek_base_url: str = "https://api.deepseek.com"
-
-    # PostgreSQL
-    database_url: str = "postgresql+asyncpg://ara:ara_secret@localhost:5432/ara_db"
 
     # Qdrant
     qdrant_host: str = "localhost"
@@ -30,29 +25,14 @@ class Settings(BaseSettings):
 
     # Models
     embedding_model: str = "BAAI/bge-small-en-v1.5"
-    reranker_model: str = "BAAI/bge-reranker-base"
 
-    # Self-improvement thresholds
-    faithfulness_threshold: float = 0.7
-    completeness_threshold: float = 0.6
-    citation_precision_threshold: float = 0.4
-    citation_precision_threshold: float = 0.4
-
-    # Constraints
-    max_latency_seconds: float = 15.0
-
-    # Retrieval intelligence / control
-    evidence_coverage_threshold: float = 0.45
-    min_retrieval_diversity: float = 0.25
-    evaluator_confidence_threshold: float = 0.4
+    # Meta-Agent-RAG defaults
+    retrieval_top_k: int = 5
+    monitor_similarity_threshold: float = 0.4
 
     # Metacognitive regulation (Paper §4, §6.5)
-    max_metacognitive_rounds: int = 3
+    max_metacognitive_rounds: int = 5
     metacognitive_convergence_threshold: float = 0.85
-
-    # Phase 3 latency optimizations (default OFF for reproducibility)
-    fast_path_threshold: float | None = None  # evaluator confidence for skipping diagnosis; None = disabled
-    disable_parallel: bool = False  # disable parallel post-write verification
 
 
 settings = Settings()
