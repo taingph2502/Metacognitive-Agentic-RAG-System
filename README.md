@@ -1,4 +1,4 @@
-# Meta-Agentic-RAG: Metacognitive Retrieval-Augmented Generation
+# Meta-Agentic RAG | Adaptive Multi-Hop QA Research System
 
 ## Overview
 
